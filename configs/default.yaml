@@ -1,0 +1,26 @@
+# Initial project settings. Analysis-specific settings will be added with each pipeline step.
+project: oncorna-ml
+random_seed: 20261006
+python_version: "3.11"
+
+analysis:
+  primary_endpoint: pam50_subtype
+  secondary_endpoint: overall_survival_optional
+  split_unit: patient_id
+  primary_metric: macro_f1
+  clinical_use: false
+
+data:
+  mode: demo
+  demo_dir: data/demo
+  raw_dir: data/raw
+  processed_dir: data/processed
+  # Record the selected public source and exact release in docs/data_provenance.md
+  expression_source: not_selected
+  label_source: not_selected
+
+validation:
+  # Freeze a patient-level test split before inspecting its metrics.
+  test_fraction: 0.20
+  outer_cv_folds: 5
+  inner_cv_folds: 3

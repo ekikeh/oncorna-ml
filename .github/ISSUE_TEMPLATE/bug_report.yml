@@ -1,0 +1,24 @@
+name: Bug report
+description: Report a reproducible problem in code or documentation.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include patient-level data, credentials, or other sensitive information."
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include the command and a minimal error message, with private/local paths removed.
+    validations:
+      required: true
+  - type: textarea
+    id: reproducible
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Git commit or release

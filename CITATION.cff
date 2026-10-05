@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "OncoRNA-ML: Reproducible RNA-seq Biomarker Discovery and Interpretable Risk Classification"
+type: software
+authors:
+  - name: "ekikeh"
+version: 0.1.0
+date-released: "2026-10-06"
+license: MIT
+repository-code: "https://github.com/ekikeh/oncorna-ml"

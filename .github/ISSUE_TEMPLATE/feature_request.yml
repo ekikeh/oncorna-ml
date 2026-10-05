@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest a scoped improvement.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What problem would this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Data and clinical-safety check
+      options:
+        - label: This request does not require committing sensitive or controlled-access data.
