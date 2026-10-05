@@ -1,5 +1,8 @@
 # OncoRNA-ML
 
+[![CI](https://github.com/ekikeh/oncorna-ml/actions/workflows/ci.yml/badge.svg)](https://github.com/ekikeh/oncorna-ml/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 **A reproducible, leakage-aware study of RNA-seq features for breast-cancer PAM50 subtype classification.**
 
 > **Research/education only.** This project is not a medical device and must not be used for diagnosis, treatment selection, or patient-care decisions.
