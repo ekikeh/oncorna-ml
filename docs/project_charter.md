@@ -1,6 +1,6 @@
 # Project charter — OncoRNA-ML
 
-**Status:** draft for Phase 0; finalize data-source details before downloading or analyzing a cohort.
+**Status:** Phase 1A data acquisition is implemented. The selected public source is documented in `docs/data_provenance.md`; no preprocessing or analysis has started.
 
 ## Research question
 
@@ -37,9 +37,9 @@ This is a computational learning exercise, not clinical validation and not a sea
 3. Input provenance, patient-level split logic, parameters, and software versions are recorded.
 4. Any eventual results include leakage checks, baselines, class-wise errors, limitations, and a clear non-clinical disclaimer.
 
-## Open decisions before Phase 1
+## Decisions remaining before preprocessing/modeling
 
-- Exact TCGA-BRCA expression source and release, and whether it supplies raw counts or normalized expression.
-- PAM50 label source and sample-ID mapping.
-- Patient/sample inclusion rules and treatment of duplicate aliquots or rare classes.
-- Demo-data generation method and redistribution/license statement.
+- Patient/sample inclusion rules, including primary-tumor selection, duplicate aliquots, and handling of missing or rare PAM50 classes.
+- If count-based differential expression is implemented, select a raw-count source; the Phase 1A Xena expression file is log2-normalized and is not suitable as raw DESeq2/PyDESeq2 input.
+- Define the demo-data generation method and document its license/redistribution status.
+- Specify sample-ID harmonization and downstream QC rules before any analysis.

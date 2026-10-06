@@ -15,9 +15,9 @@ data:
   demo_dir: data/demo
   raw_dir: data/raw
   processed_dir: data/processed
-  # Record the selected public source and exact release in docs/data_provenance.md
-  expression_source: not_selected
-  label_source: not_selected
+  # Expression values are log2-transformed normalized values, not raw counts.
+  expression_source: "UCSC Xena TCGA hub: TCGA.BRCA.sampleMap/HiSeqV2"
+  label_source: "UCSC Xena TCGA hub: BRCA_clinicalMatrix/PAM50Call_RNAseq"
 
 validation:
   # Freeze a patient-level test split before inspecting its metrics.

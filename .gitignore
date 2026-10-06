@@ -16,7 +16,8 @@ dist/
 .idea/
 .vscode/
 
-# Local data and generated results: never commit full-cohort files.
+# Full public cohort files and derived patient-level matrices are local-only.
+# Keep the empty placeholders trackable, but ignore every downloaded/processed file.
 data/raw/*
 !data/raw/.gitkeep
 data/processed/*

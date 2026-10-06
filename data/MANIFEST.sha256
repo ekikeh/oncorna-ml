@@ -1,0 +1,4 @@
+# SHA-256 checksums for OncoRNA-ML downloaded inputs.
+# Paths are relative to the repo root; source URLs are in docs/data_provenance.md.
+39eb3be0fb86e6a577bd2cc01502a7fa5a271e1e1cba294e9dc644ad99580d7f  data/raw/TCGA-BRCA_BRCA_clinicalMatrix.tsv
+263bf67245cc4b9062676583c0ff0306f08471a26aafd5504037e1da22133746  data/raw/TCGA-BRCA_HiSeqV2.tsv.gz
