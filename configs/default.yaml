@@ -19,6 +19,32 @@ data:
   expression_source: "UCSC Xena TCGA hub: TCGA.BRCA.sampleMap/HiSeqV2"
   label_source: "UCSC Xena TCGA hub: BRCA_clinicalMatrix/PAM50Call_RNAseq"
 
+qc:
+  # Phase 1D starts from the frozen, one-sample-per-patient Phase 1C cohort.
+  expected_cohort_samples: 844
+  expression_scale: "log2(normalized_count + 1)"
+  cohort_path: data/processed/classification_cohort.tsv
+  expression_path: data/raw/TCGA-BRCA_HiSeqV2.tsv.gz
+  sample_metrics_path: data/processed/qc_sample_metrics.tsv
+  gene_summary_path: data/processed/qc_gene_summary.tsv
+  report_path: docs/qc.md
+  figure_dir: reports/figures/qc
+  near_zero_expression_max: 0.1
+  expression_prevalence_thresholds: [0.0, 1.0, 2.0]
+  gene_filter:
+    # Strict expression prevalence; labels are not used. Values are log2(normalized_count + 1).
+    expression_gt: 1.0
+    minimum_sample_fraction: 0.20
+  sample_filter:
+    # Exclude for unusable non-finite data or >5% missing values, never for Tukey flags alone.
+    maximum_missing_fraction: 0.05
+    exclude_any_infinite_values: true
+    exclude_no_finite_values: true
+  outlier_detection:
+    # Exploratory sum of pre-filter log-expression values; not a read count/library size.
+    metric: aggregate_expression_signal
+    tukey_iqr_multiplier: 1.5
+
 validation:
   # Freeze a patient-level test split before inspecting its metrics.
   test_fraction: 0.20
