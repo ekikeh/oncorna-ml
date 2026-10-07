@@ -1,4 +1,4 @@
-# Data provenance — Phase 1A
+# Data provenance — Phase 1A acquisition and Phase 1B audit
 
 ## Selected dataset
 
@@ -12,14 +12,28 @@
 
 | Local file | Xena dataset / source URL | Data type and notes |
 | --- | --- | --- |
-| `data/raw/TCGA-BRCA_HiSeqV2.tsv.gz` | [`TCGA.BRCA.sampleMap/HiSeqV2`](https://tcga.xenahubs.net/download/TCGA.BRCA.sampleMap/HiSeqV2.gz) · [dataset metadata](https://xenabrowser.net/datapages/?dataset=TCGA.BRCA.sampleMap%2FHiSeqV2&host=https%3A%2F%2Ftcga.xenahubs.net) | Gene-level Illumina HiSeq RNA-seq matrix: 20,531 identifiers × 1,218 samples in the Xena page metadata. Unit is `log2(norm_count + 1)`; these are **not raw integer counts**. |
+| `data/raw/TCGA-BRCA_HiSeqV2.tsv.gz` | [`TCGA.BRCA.sampleMap/HiSeqV2`](https://tcga.xenahubs.net/download/TCGA.BRCA.sampleMap/HiSeqV2.gz) · [dataset metadata](https://xenabrowser.net/datapages/?dataset=TCGA.BRCA.sampleMap%2FHiSeqV2&host=https%3A%2F%2Ftcga.xenahubs.net) | Gene-level Illumina HiSeq RNA-seq matrix. Xena page metadata lists 20,531 identifiers × 1,218 samples; the Phase 1B scan found 20,530 data rows × 1,218 sample columns, a one-identifier discrepancy that remains unresolved. Unit is `log2(norm_count + 1)`; these are **not raw integer counts**. |
 | `data/raw/TCGA-BRCA_BRCA_clinicalMatrix.tsv` | [`TCGA.BRCA.sampleMap/BRCA_clinicalMatrix`](https://tcga.xenahubs.net/download/TCGA.BRCA.sampleMap/BRCA_clinicalMatrix) · [dataset metadata](https://xenabrowser.net/datapages/?dataset=TCGA.BRCA.sampleMap%2FBRCA_clinicalMatrix&host=https%3A%2F%2Ftcga.xenahubs.net) | Tab-separated clinical/sample annotations: 1,247 samples × 194 fields in the Xena page metadata. Includes `sampleID` and the `PAM50Call_RNAseq` field where available; the source label is not inferred by this project. |
 
-The expression matrix is a processed legacy TCGA RNASeqV2 dataset, not GDC-harmonized raw counts. It is an expression matrix for later, separately specified work, but **must not be passed to DESeq2/PyDESeq2 as raw counts**. If a later phase requires count-based differential expression, select and document a raw-count source separately rather than reversing this log transform and treating the result as raw counts.
+The expression matrix is a processed legacy TCGA RNASeqV2 dataset, not GDC-harmonized raw counts. Its values are `log2(normalized_count + 1)`: it may be used for visualization or documented ML preprocessing, but **must not be passed directly to DESeq2/PyDESeq2 as raw integer counts**. If a later phase requires count-based differential expression, select and document a raw-count source separately rather than reversing this log transform and treating the result as raw counts.
 
 The Xena pages report different sample counts for the expression and clinical tables. Phase 1A deliberately downloads them without matching, filtering, or preprocessing. Later work must explicitly inspect barcode overlap, tumor/normal sample types, duplicate aliquots, and missing PAM50 labels before analysis.
 
-No filtering, sample matching, duplicate handling, or expression transformation is performed by the downloader. The clinical matrix contains TCGA barcodes and clinical fields; keep it local and never commit it to Git.
+No filtering, sample matching, duplicate handling, or expression transformation is performed by the downloader. The clinical matrix contains TCGA barcodes and clinical fields; keep the raw clinical matrix local and never commit it to Git.
+
+## Phase 1B audit and identifier harmonization
+
+The read-only audit is reproducible from the repository root:
+
+```bash
+python scripts/audit_data.py
+```
+
+It streams the gzipped expression matrix row by row and writes the preliminary findings to `docs/data_audit.md`. On the files downloaded for this run, the local scan found 20,530 expression data rows and 1,218 sample columns, plus 1,247 clinical sample rows and 194 fields. It found 20,530 unique nonblank gene IDs (20,501 gene-symbol-like strings and 29 Xena numeric fallbacks; no duplicate gene IDs). No Ensembl-style IDs were detected by the visible-pattern check. The Xena page metadata lists 20,531 expression identifiers, one more than the local data-row count; the cause is unresolved, so the report uses the scanned file count.
+
+The exact sample-ID intersection is 1,218: 100.0% of the 1,218 unique expression IDs and 97.7% of the 1,247 unique clinical IDs. There are no expression-only IDs and 29 clinical-only IDs; the complete unmatched list is in `docs/data_audit.md`. Participant IDs from expression barcodes are derived from the first three hyphen-separated fields without collapsing samples. The scan found 1,097 expression participants, of whom 118 have multiple expression samples (979 participants with one sample, 115 with two, and 3 with three). The clinical `patient_id` field is an abbreviated final barcode segment in all 1,242 rows where both it and `bcr_patient_barcode` are present; it is not a full TCGA patient barcode.
+
+`PAM50Call_RNAseq` has 956 nonmissing calls and 291 missing values. Its original labels and counts are preserved in the audit report, along with possible display-name correspondences and the distinct `PAM50_mRNA_nature2012` field. No labels are recoded, genes or samples filtered, unmatched IDs discarded, or duplicate aliquots selected. The audit does not make a clinical endpoint or sample-retention decision.
 
 ## Usage, license, and attribution
 
