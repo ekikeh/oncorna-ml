@@ -55,6 +55,20 @@ ml_matrix:
   manifest_path: data/processed/ml_matrix_manifest.json
   expression_transform: "none; copy selected source values verbatim"
 
+splitting:
+  # Phase 1F patient-level split; split_v1 is immutable after first creation.
+  output_path: data/processed/split_v1.json
+  split_unit: patient_id
+  stratification_label: pam50_normalized_label
+  proportions:
+    train: 0.60
+    validation: 0.20
+    test: 0.20
+  # Largest-remainder ties are resolved in this fixed order.
+  rounding_tie_order: [validation, test, train]
+  test_random_state_offset: 0
+  validation_random_state_offset: 1
+
 validation:
   # Freeze a patient-level test split before inspecting its metrics.
   test_fraction: 0.20
