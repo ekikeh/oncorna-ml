@@ -45,6 +45,16 @@ qc:
     metric: aggregate_expression_signal
     tukey_iqr_multiplier: 1.5
 
+ml_matrix:
+  # Phase 1E freezes the Phase 1C/1D sample and retained-gene dimensions.
+  expected_sample_count: 844
+  expected_source_gene_count: 20530
+  expected_gene_count: 17623
+  output_path: data/processed/ml_expression_matrix.tsv.gz
+  gene_list_path: data/processed/ml_gene_list.tsv
+  manifest_path: data/processed/ml_matrix_manifest.json
+  expression_transform: "none; copy selected source values verbatim"
+
 validation:
   # Freeze a patient-level test split before inspecting its metrics.
   test_fraction: 0.20
