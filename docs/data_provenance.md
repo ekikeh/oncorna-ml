@@ -37,7 +37,7 @@ The exact sample-ID intersection is 1,218: 100.0% of the 1,218 unique expression
 
 ## Usage, license, and attribution
 
-The Xena data pages do not display a file-level license for these cohort files. Cite UCSC Xena and the applicable TCGA source/publications, and check current TCGA publication/data-use guidance before reusing or redistributing source data. The repository's MIT license applies to project code only; it does not relicense these cohort files. This project commits checksums and provenance, not the full expression or clinical matrices.
+The Xena data pages do not display a file-level license for these cohort files. Cite UCSC Xena and the applicable TCGA source/publications, and check current TCGA publication/data-use guidance before reusing or redistributing source data. The repository's MIT license applies to project code only; it does not relicense these cohort files. This project does not commit the full expression or clinical matrices. Phase 1G commits only a compact, attributed 100-gene-by-10-training-sample preview under `data/demo/`; its selection rules and the remaining upstream-license caveat are documented in [`docs/demo_dataset.md`](demo_dataset.md). The [GDC FAQ](https://gdc.cancer.gov/about-gdc/gdc-faqs) describes accredited use of open-access GDC data, but does not supply a file-specific Xena license or independently settle republication of this excerpt.
 
 Useful source pages:
 

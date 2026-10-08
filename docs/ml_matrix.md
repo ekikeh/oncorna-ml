@@ -44,4 +44,4 @@ Running the command below from the repository root creates:
 python scripts/build_ml_matrix.py
 ```
 
-Use `python scripts/build_ml_matrix.py --config PATH` to specify another YAML config with the required `qc` and `ml_matrix` settings; keep all three output paths under `data/processed/` so they remain Git-ignored. The generated artifacts are **not committed**; the script, configuration, tests, and this documentation are the reproducible project deliverables.
+Use `python scripts/build_ml_matrix.py --config PATH` to specify another YAML config with the required `qc` and `ml_matrix` settings; keep all three output paths under `data/processed/` so they remain Git-ignored. These **full Phase 1E artifacts are not committed**. Phase 1G separately commits only a compact 100-gene-by-10-training-sample excerpt under `data/demo/`; see [`docs/demo_dataset.md`](demo_dataset.md) for its selection rules, reproduction, and attribution caveat.

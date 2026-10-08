@@ -1,6 +1,6 @@
 # Project charter — OncoRNA-ML
 
-**Status:** Phase 1A data acquisition is implemented. The selected public source is documented in `docs/data_provenance.md`; no preprocessing or analysis has started.
+**Status:** Data-preparation Phases 1A–1G are implemented. The selected public source, approved cohort, processed matrix, frozen patient-level split, and compact attributed demo are documented in `docs/`; no model training or evaluation, differential expression, enrichment analysis, or biological interpretation has started.
 
 ## Research question
 
@@ -28,18 +28,18 @@ This is a computational learning exercise, not clinical validation and not a sea
 - Keep all preprocessing that learns from data—including scaling, feature selection, and tuning—inside training folds.
 - Compare against a dummy baseline and a regularized multinomial logistic-regression model before adding complex models.
 - Headline macro-F1; also report balanced accuracy, per-class precision/recall, confusion matrix, and uncertainty where sample size permits.
-- Use a synthetic demo only to check that the code runs. Synthetic results are not evidence of biological or clinical performance.
+- A compact, fixed demo subset from the training partition is committed for table/schema inspection; synthetic fixtures may be used in tests. Neither the demo nor synthetic fixtures are evidence of biological or clinical performance.
 
 ## Success criteria
 
 1. A new user can create the environment and run tests from a clean clone.
-2. A deterministic synthetic/demo workflow can later run without downloading the full cohort.
+2. A new user can inspect the committed demo without downloading the full cohort; reproducing it is deterministic when the documented local Phase 1C/1E/1F inputs are present.
 3. Input provenance, patient-level split logic, parameters, and software versions are recorded.
 4. Any eventual results include leakage checks, baselines, class-wise errors, limitations, and a clear non-clinical disclaimer.
 
-## Decisions remaining before preprocessing/modeling
+## Recorded Phase 1 decisions and future review
 
-- Patient/sample inclusion rules, including primary-tumor selection, duplicate aliquots, and handling of missing or rare PAM50 classes.
-- If count-based differential expression is implemented, select a raw-count source; the Phase 1A Xena expression file is log2-normalized and is not suitable as raw DESeq2/PyDESeq2 input.
-- Define the demo-data generation method and document its license/redistribution status.
-- Specify sample-ID harmonization and downstream QC rules before any analysis.
+- Cohort/sample inclusion, patient-to-sample mapping, PAM50 normalization, QC, matrix semantics, and the immutable patient-level split are recorded in the corresponding Phase 1 documentation.
+- Phase 1G documents and tests the small training-only demo sampling rules and source attribution. Xena does not display a file-level license for the source files; review current upstream terms before any broader redistribution. The repository's MIT license covers project code only.
+- If count-based differential expression is implemented later, select a raw-count source; the Phase 1A Xena expression file is log2-normalized and is not suitable as raw DESeq2/PyDESeq2 input.
+- Before any Phase 2 modeling or evaluation, follow the locked-test policy in `docs/data_splits.md` and keep learned preprocessing, feature selection, and tuning inside training folds.

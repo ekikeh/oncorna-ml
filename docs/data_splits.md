@@ -34,7 +34,7 @@ All five normalized PAM50 classes are represented in each partition. Integer all
 
 The **Normal-like** class has only 23 patients: 13 are in training and only 5 in each of validation and test. Stratification preserves representation, but cannot remove the substantial uncertainty caused by such a small class. A single test-set Normal-like case is 20% of that class's test count, so class-specific test estimates will be unstable. This limitation should be considered in human review; do not address it by moving patients after viewing model results.
 
-The test partition is **locked during model development**. Do not inspect test-set performance or use test patients for model, feature, or hyperparameter selection. Any eventual evaluation must be a one-time final assessment after development decisions are complete; Phase 1F performs no such evaluation.
+The test partition is **locked during model development**. Do not inspect test-set performance or use test patients for model, feature, or hyperparameter selection. Any eventual evaluation must be a one-time final assessment after development decisions are complete; Phase 1F performs no such evaluation. The separate Phase 1G demo draws only from `train`, contains no validation/test samples, and performs no evaluation; see [`docs/demo_dataset.md`](demo_dataset.md).
 
 ## Output and regeneration
 

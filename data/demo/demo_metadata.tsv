@@ -1,0 +1,11 @@
+sample_id	patient_id	pam50_original_label	pam50_normalized_label	split
+TCGA-EW-A1J2-01	TCGA-EW-A1J2	LumA	Luminal A	train
+TCGA-A8-A083-01	TCGA-A8-A083	LumA	Luminal A	train
+TCGA-BH-A0BF-01	TCGA-BH-A0BF	LumB	Luminal B	train
+TCGA-A2-A04R-01	TCGA-A2-A04R	LumB	Luminal B	train
+TCGA-A2-A04Q-01	TCGA-A2-A04Q	Basal	Basal-like	train
+TCGA-C8-A134-01	TCGA-C8-A134	Basal	Basal-like	train
+TCGA-AN-A04C-01	TCGA-AN-A04C	Her2	HER2-enriched	train
+TCGA-C8-A26Y-01	TCGA-C8-A26Y	Her2	HER2-enriched	train
+TCGA-A2-A0CZ-01	TCGA-A2-A0CZ	Normal	Normal-like	train
+TCGA-A2-A25A-01	TCGA-A2-A25A	Normal	Normal-like	train

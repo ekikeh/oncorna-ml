@@ -1,0 +1,8 @@
+# Phase 1G demo settings live separately so the frozen Phase 1F split's
+# recorded configs/default.yaml checksum remains unchanged.
+partition: train
+samples_per_class: 2
+gene_count: 100
+output_expression_path: data/demo/demo_expression.tsv
+output_metadata_path: data/demo/demo_metadata.tsv
+output_manifest_path: data/demo/demo_manifest.json

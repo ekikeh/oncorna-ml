@@ -9,7 +9,7 @@
 
 ## Status
 
-**Phase 1A — reproducible data acquisition.** The Python downloader for public UCSC Xena TCGA-BRCA expression and clinical/PAM50 files is implemented. The files have been retrieved locally and checksummed, but remain ignored by Git. No preprocessing, QC, modeling, differential expression, GSEA, or machine learning has started; no performance or biomarker claims are made. A small synthetic demo will be added in a later phase.
+**Data-preparation Phases 1A–1G are implemented.** The workflow acquires public UCSC Xena TCGA-BRCA inputs, defines and quality-checks the approved cohort, creates a processed expression matrix, freezes a patient-level train/validation/test split, and commits a compact demo subset. The demo contains 10 training samples across all five normalized PAM50 classes and 100 genes; the full cohort, processed matrix, and frozen split remain local-only. No model training, performance evaluation, differential expression, GSEA, or biological claims have been made.
 
 ## Goal
 
@@ -45,32 +45,35 @@ uv pip install --python .venv/bin/python -e ".[dev]"
 
 The download retrieves about 63 MiB of source files, writes SHA-256 checksums to `data/MANIFEST.sha256`, and skips existing files on later runs. Add `--force` to replace them. Tests use small mocked responses; they do not fetch the cohort. Full raw files stay local and are not committed.
 
+The tracked demo tables in [`data/demo/`](data/demo/) can be inspected without downloading the full matrix. Regenerating them requires the local approved cohort, processed matrix, retained-gene list, and frozen `split_v1`; see [`docs/demo_dataset.md`](docs/demo_dataset.md) for the reproduction command and prerequisites.
+
 ## Selected data and scientific guardrails
 
 - Cohort: TCGA-BRCA from the public UCSC Xena TCGA hub.
 - Expression: `HiSeqV2.gz`, a gene-level, processed legacy TCGA RNA-seq matrix.
 - Clinical/sample metadata and PAM50 label: `BRCA_clinicalMatrix`, including `PAM50Call_RNAseq` where available.
 - The Xena expression values are log2-transformed normalized expression, **not raw integer counts**. Do not use them directly as DESeq2/PyDESeq2 counts. If a later phase includes count-based differential expression, select and document a suitable raw-count source first.
-- Raw cohort files and derived patient-level matrices must **not** be committed. Only a small synthetic or clearly redistributable demo fixture belongs under `data/demo/`.
-- A patient—not an aliquot or sample—is the unit for future splits. Feature selection and tuning must stay inside training folds. PAM50 prediction is label reconstruction, not a claim of discovering new PAM50 biomarkers.
+- Full raw cohort files, the full derived expression matrix, and the local split manifest must **not** be committed. `data/demo/` contains only a small, attributed source-derived preview; it is not a synthetic dataset or a population-representative sample.
+- Demo samples come only from the training partition so validation and test examples stay out of the public preview. The fixed gene subset is for compact table inspection, not biological feature selection.
+- A patient—not an aliquot or sample—is the unit for the frozen split. Future feature selection and tuning must stay inside training folds. PAM50 prediction is label reconstruction, not a claim of discovering new PAM50 biomarkers.
 
-See [`docs/data_provenance.md`](docs/data_provenance.md) for source URLs, date, checksums, and usage notes; also see the [`project charter`](docs/project_charter.md) and [`model card`](docs/model_card.md).
+See [`docs/data_provenance.md`](docs/data_provenance.md) for source URLs, checksums, and usage notes; [`docs/data_splits.md`](docs/data_splits.md) for the frozen split; [`docs/demo_dataset.md`](docs/demo_dataset.md) for the demo rules; and the [`project charter`](docs/project_charter.md) and [`model card`](docs/model_card.md) for scope and limitations.
 
 ## Repository map
 
 ```text
-configs/                   analysis settings and random seeds
-scripts/download_data.py   public TCGA-BRCA downloader and checksum updater
-data/MANIFEST.sha256       checksums only; no cohort data
-data/demo/                 future synthetic / redistributable smoke-test fixture
+configs/                   project settings and separate Phase 1G demo settings
+scripts/                   data acquisition, split, and demo-build commands
+data/MANIFEST.sha256       source checksums; no full cohort data
+data/demo/                 compact demo expression, metadata, and provenance
 data/raw/, data/processed/ local data locations; full files are git-ignored
-docs/                      project charter, provenance, and model card
-src/oncorna/                installable Python package
-tests/                      automated checks
-workflow/                   planned Snakemake workflow (later phase)
-.github/workflows/          pull-request CI
+docs/                      project charter, provenance, split, and demo docs
+src/oncorna/               installable Python package
+tests/                     automated checks
+workflow/                  planned Snakemake workflow (later phase)
+.github/workflows/         pull-request CI
 ```
 
 ## License and citation
 
-The **code** is licensed under the MIT License. Data and third-party resources retain their own terms; see [`docs/data_provenance.md`](docs/data_provenance.md). Citation metadata is in [`CITATION.cff`](CITATION.cff).
+The **code** is licensed under the MIT License. Data and third-party resources retain their own terms; the Xena source pages do not display a file-level license, and this repository does not claim that the MIT license covers the demo data. The small subset is attributed in [`docs/demo_dataset.md`](docs/demo_dataset.md); see [`docs/data_provenance.md`](docs/data_provenance.md) before reusing it. Citation metadata is in [`CITATION.cff`](CITATION.cff).
