@@ -1,6 +1,6 @@
 # Model card — OncoRNA-ML
 
-**Status:** training-only Phase 2B cross-validation completed. No model has been fitted on all training patients, and no validation or test evaluation has been performed. Development results and their limitations are documented in [the Phase 2B report](../reports/phase_2b_training_cv.md); they are not clinical performance claims.
+**Status:** Phase 2B training-only cross-validation and one frozen Phase 2C validation evaluation completed. The selected pipeline was fitted on all 506 training patients and evaluated once on 169 validation patients; the test set remains locked. Results and limitations are documented in the [Phase 2B report](../reports/phase_2b_training_cv.md) and [Phase 2C report](../reports/phase_2c_validation.md). They are not clinical performance claims.
 
 ## Intended use
 
@@ -18,7 +18,7 @@ Diagnosis, prognosis for an individual, treatment selection, clinical triage, or
 - **Metrics:** macro-F1 as the primary metric, with class-wise precision/recall, balanced accuracy, confusion matrix, and uncertainty if supported by the data.
 - **Baselines:** dummy classifier, followed by regularized multinomial logistic regression before considering more complex models.
 
-The Phase 2B training-only baseline and logistic-regression development metrics are reported separately. No validation/test result or deployable model artifact has been produced.
+The Phase 2B development and Phase 2C validation metrics are reported separately. No test result or deployable model artifact has been produced; the fitted pipeline is local-only.
 
 ## Data and limitations
 

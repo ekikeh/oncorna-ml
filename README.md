@@ -9,7 +9,7 @@
 
 ## Status
 
-**Data-preparation Phases 1A–1G and training-only Phase 2B cross-validation are implemented.** The workflow acquires public UCSC Xena TCGA-BRCA inputs, defines and quality-checks the approved cohort, creates a processed expression matrix, freezes a patient-level train/validation/test split, and commits a compact demo subset. Phase 2B compares a majority baseline with L2 multinomial logistic regression across four training-only folds; see the [Phase 2B report](reports/phase_2b_training_cv.md). The full cohort, processed matrix, frozen split, and patient-level CV predictions remain local-only. No full-training model, validation/test evaluation, differential expression, GSEA, or biological claims have been made.
+**Data-preparation Phases 1A–1G, training-only Phase 2B cross-validation, and one frozen Phase 2C validation evaluation are implemented.** The workflow acquires public UCSC Xena TCGA-BRCA inputs, defines and quality-checks the approved cohort, creates a processed expression matrix, freezes a patient-level train/validation/test split, and commits a compact demo subset. Phase 2B compares a majority baseline with L2 multinomial logistic regression across four training-only folds; Phase 2C fits the selected model on the 506 training patients and evaluates the frozen 169-patient validation set once. See the [Phase 2B report](reports/phase_2b_training_cv.md) and [Phase 2C report](reports/phase_2c_validation.md). The full cohort, processed matrix, frozen split, fitted model, and patient-level predictions remain local-only. No test evaluation, train-plus-validation refit, differential expression, GSEA, or biological claims have been made.
 
 ## Goal
 

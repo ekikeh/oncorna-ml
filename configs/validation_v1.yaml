@@ -1,0 +1,11 @@
+version: validation_v1
+approved_commit: f58abd350d0d49295249c29f6fbf898620987481
+modeling_config: configs/modeling_v1.yaml
+modeling_config_sha256: fac73f4d56d5a9a4726ee421d19f30dacb0a63f6376028d6ffe2ca59c7da7ce5
+phase2b_manifest: data/processed/modeling_v1/manifest.json
+phase2b_results: data/processed/modeling_v1/candidate_results.json
+output_dir: data/processed/validation_v1
+selected_C: 1.0
+training_size: 506
+validation_size: 169
+test_size: 169
