@@ -1,0 +1,98 @@
+# Phase 2D-B frozen scientific settings. Real execution requires separate approval.
+version: final_test_v1
+review_status: approved_for_infrastructure_only
+protocol_base_commit: 7bb92028391f6132983b580c09e7672c78d715d9
+execution_requires_separate_human_approval: true
+
+inputs:
+  all_gene_expression: data/processed/preprocessing_v1/all_gene_expression.npy
+  all_gene_schema: data/processed/preprocessing_v1/all_gene_schema.json
+  preprocessing_manifest: data/processed/preprocessing_v1/manifest.json
+  source_expression: data/raw/TCGA-BRCA_HiSeqV2.tsv.gz
+  cohort: data/processed/classification_cohort.tsv
+  frozen_split: data/processed/split_v1.json
+  modeling_config: configs/modeling_v1.yaml
+  validation_config: configs/validation_v1.yaml
+  phase2b_manifest: data/processed/modeling_v1/manifest.json
+  phase2c_manifest: data/processed/validation_v1/manifest.json
+  expected_sha256:
+    all_gene_expression: 692eb3c5a3cc215ac8f58ac5186a8b6f0a296acded4dde5eb07fbb37f54030d3
+    all_gene_schema: fd37450af00617cae23e31bffdca1ed23b65e90309b16ef68946f99e64fef161
+    preprocessing_manifest: 335a128533c2505d401213135204298764703ce4b01568f94609385ffee53a6a
+    source_expression: 263bf67245cc4b9062676583c0ff0306f08471a26aafd5504037e1da22133746
+    cohort: d3b117a31266ee7c790b7cc9a7a29edc98ca71e020c6087192b3c6340afa8ca9
+    frozen_split: 33e464aa58a69bed96740ef76b011ad23689acf2ed3baef79729b62057a2e26d
+    modeling_config: fac73f4d56d5a9a4726ee421d19f30dacb0a63f6376028d6ffe2ca59c7da7ce5
+    validation_config: 442fda113a475cad935369461a5d3d1dae39c137b1a1da7abd56a1f4c6a4f8a3
+    phase2b_manifest: 26dc308f9dbbc27980e3bfb4f60adbbb733fadeab891c0b5c6d8dafce165016f
+    phase2c_manifest: e00f1c77c9cc8402a25fc51cd1ab4ba1e3bf0df380b580c06b9526e879da9db6
+
+partitions:
+  original_train: 506
+  original_validation: 169
+  final_fit: [train, validation]
+  final_fit_count: 675
+  final_test_count: 169
+  split_membership_must_remain_unchanged: true
+
+task:
+  target: pam50_normalized_label
+  feature_count_before_filter: 20530
+  expression_units: log2(normalized_count + 1)
+  class_order: [Luminal A, Luminal B, Basal-like, HER2-enriched, Normal-like]
+
+pipeline:
+  gene_filter:
+    expression_gt: 1.0
+    minimum_sample_fraction: 0.20
+    required_fit_sample_count: 135
+    refit_on_final_fit_patients: true
+  scaler: StandardScaler
+  imputer: null
+  feature_selector: null
+  pca: null
+  classifier:
+    type: multinomial_logistic_regression
+    penalty: l2
+    C: 1.0
+    solver: lbfgs
+    fit_intercept: true
+    class_weight: null
+    tol: 0.0001
+    max_iter: 1000
+  calibration: null
+  additional_hyperparameter_search: false
+
+metrics:
+  primary: macro_f1
+  zero_division: 0
+  supplementary:
+    - balanced_accuracy
+    - overall_accuracy
+    - per_class_precision_recall_f1_support
+    - raw_confusion_matrix
+    - row_normalized_confusion_matrix
+    - predicted_class_distribution
+    - aligned_five_class_probabilities
+
+reporting:
+  class_order: [Luminal A, Luminal B, Basal-like, HER2-enriched, Normal-like]
+  zero_division: 0
+  confusion_rows: true_label
+  confusion_columns: predicted_label
+  row_normalization: divide_each_row_by_its_true_class_support
+  row_normalized_machine_units: fraction_0_to_1
+  row_normalized_human_units: percent
+  machine_numeric_precision: full_float64_json
+  human_metric_decimal_places: 4
+  human_percentage_decimal_places: 1
+  probability_columns: ordered_by_reporting_class_order
+  probability_row_sum_absolute_tolerance: 1.0e-9
+  support_reconciliation: rows_equal_true_class_support_and_total_test_count
+  prediction_reconciliation: columns_equal_predicted_class_counts_and_total_test_count
+
+outputs:
+  directory: data/processed/final_test_v1
+  exclusive_create: true
+  overwrite: false
+  patient_level_and_model_artifacts: local_only
