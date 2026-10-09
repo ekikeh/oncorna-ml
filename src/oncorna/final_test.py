@@ -12,7 +12,7 @@ import subprocess
 import time
 import warnings
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
@@ -24,7 +24,12 @@ import sklearn
 from sklearn.exceptions import ConvergenceWarning
 
 from oncorna.modeling import make_pipeline, scores
-from oncorna.preprocessing import identity_digest, sha256_file, verify_split_provenance
+from oncorna.preprocessing import (
+    identity_digest,
+    sha256_file,
+    verify_historical_config,
+    verify_split_provenance,
+)
 
 LABELS = ("Luminal A", "Luminal B", "Basal-like", "HER2-enriched", "Normal-like")
 FIT_COUNTS = {
@@ -35,6 +40,9 @@ FIT_COUNTS = {
     "Normal-like": 18,
 }
 STATES = ("reserved", "fitting", "fitted", "test_access_started", "completed", "failed")
+TEST_CONTAINING_INPUTS = frozenset({"all_gene_expression", "source_expression", "cohort"})
+FIT_EXPRESSION_PATH = Path("data/processed/final_fit_v1/fit_expression.npy")
+FIT_EXPRESSION_MANIFEST_PATH = Path("data/processed/final_fit_v1/manifest.json")
 
 
 class AuthorizationError(RuntimeError):
@@ -74,6 +82,8 @@ class Source(Protocol):
     def load_test_expression(self, snapshot: Snapshot) -> TestData: ...
     def load_test_labels(self, snapshot: Snapshot) -> np.ndarray: ...
     def note_predictions_saved(self) -> None: ...
+    def begin_test_access(self) -> None: ...
+    def verify_full_provenance(self, snapshot: Snapshot) -> Snapshot: ...
 
 
 class SyntheticFixtureSource:
@@ -128,6 +138,13 @@ class SyntheticFixtureSource:
 
     def note_predictions_saved(self) -> None:
         self.events.append("predictions_saved")
+
+    def begin_test_access(self) -> None:
+        self.events.append("test_access_authorized")
+
+    def verify_full_provenance(self, snapshot: Snapshot) -> Snapshot:
+        self.events.append("full_provenance_verified")
+        return snapshot
 
     def load_test_labels(self, snapshot: Snapshot) -> np.ndarray:
         self.events.append("test_labels_loaded")
@@ -251,6 +268,47 @@ def _write_json_new(path: Path, value: Any) -> None:
     with path.open("x", encoding="utf-8", newline="\n") as handle:
         json.dump(value, handle, ensure_ascii=False, indent=2, sort_keys=True)
         handle.write("\n")
+
+
+def _atomic_write_json_new(path: Path, value: Any) -> None:
+    if path.exists():
+        raise FileExistsError(f"Sealed output already exists: {path}")
+    temporary = path.with_name(f".{path.name}.pending")
+    with temporary.open("x", encoding="utf-8", newline="\n") as handle:
+        json.dump(value, handle, ensure_ascii=False, indent=2, sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+def _verify_output_hashes(output: Path, expected: dict[str, str]) -> None:
+    for name, digest in expected.items():
+        if sha256_file(output / name) != digest:
+            raise ValueError(f"Sealed output checksum mismatch: {name}")
+
+
+def verify_completed_run(output: Path) -> dict[str, Any]:
+    """Accept success only when the terminal audit state and all seals agree."""
+    entries = [
+        json.loads(line)
+        for line in (output / "run_state.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    if not entries or entries[-1]["state"] != "completed":
+        raise ValueError("Final-test attempt has no terminal completed state")
+    terminal = entries[-1]
+    manifest_path = output / "manifest.json"
+    success_path = output / "success.json"
+    if sha256_file(manifest_path) != terminal["manifest_sha256"]:
+        raise ValueError("Completed manifest checksum does not match audit state")
+    if sha256_file(success_path) != terminal["success_sha256"]:
+        raise ValueError("Success marker checksum does not match audit state")
+    success = json.loads(success_path.read_text(encoding="utf-8"))
+    if success != {"manifest_sha256": terminal["manifest_sha256"], "status": "sealed"}:
+        raise ValueError("Success marker does not identify the completed manifest")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    _verify_output_hashes(output, manifest["output_hashes"])
+    return manifest
 
 
 class RunState:
@@ -436,6 +494,8 @@ def execute_once(
             raise AuthorizationError("Real test-access gate remains disabled")
         state.transition("test_access_started")
         stage = "test_access_started"
+        source.begin_test_access()
+        snapshot = source.verify_full_provenance(snapshot)
         test = source.load_test_expression(snapshot)
         if (
             tuple(zip(test.patient_ids, test.sample_ids, strict=True)) != test_pairs
@@ -489,8 +549,6 @@ def execute_once(
                 "row_normalized_fraction": metric["row_normalized_confusion_matrix"],
             },
         )
-        state.transition("completed")
-        stage = "completed"
         output_names = (
             "pipeline.joblib",
             "training_gene_list.tsv",
@@ -498,7 +556,6 @@ def execute_once(
             "test_predictions.tsv",
             "test_metrics.json",
             "confusion_matrices.json",
-            "run_state.jsonl",
         )
         manifest = {
             "version": "final_test_v1",
@@ -527,7 +584,20 @@ def execute_once(
             "finished_at_utc": utc_now(),
             "output_hashes": {name: sha256_file(output / name) for name in output_names},
         }
-        _write_json_new(output / "manifest.json", manifest)
+        _atomic_write_json_new(output / "manifest.json", manifest)
+        if json.loads((output / "manifest.json").read_text(encoding="utf-8")) != manifest:
+            raise ValueError("Final manifest differs from sealed in-memory record")
+        _verify_output_hashes(output, manifest["output_hashes"])
+        manifest_sha256 = sha256_file(output / "manifest.json")
+        success = {"manifest_sha256": manifest_sha256, "status": "sealed"}
+        _atomic_write_json_new(output / "success.json", success)
+        if json.loads((output / "success.json").read_text(encoding="utf-8")) != success:
+            raise ValueError("Success marker differs from sealed manifest identity")
+        success_sha256 = sha256_file(output / "success.json")
+        state.transition(
+            "completed", manifest_sha256=manifest_sha256, success_sha256=success_sha256
+        )
+        verify_completed_run(output)
         return manifest
     except Exception as exc:
         _write_json_new(
@@ -552,14 +622,20 @@ class RealSource:
 
     def __init__(self, root: Path) -> None:
         self.root = root
+        self.test_access_started = False
+        self.full_provenance_verified = False
+        self.predictions_saved = False
 
     def _path(self, config: dict[str, Any], key: str) -> Path:
         return self.root / config["inputs"][key]
 
     def preflight(self, config: dict[str, Any]) -> Snapshot:
+        self.config = config
         expected = config["inputs"]["expected_sha256"]
         hashes = {}
         for key, digest in expected.items():
+            if key in TEST_CONTAINING_INPUTS:
+                continue
             path = self._path(config, key)
             actual = sha256_file(path)
             if actual != digest:
@@ -589,47 +665,180 @@ class RealSource:
         if (
             schema["orientation"] != "samples_by_genes"
             or schema["expression_units"] != config["task"]["expression_units"]
-            or schema["shape"] != [844, config["task"]["feature_count_before_filter"]]
+            or schema["shape"]
+            != [
+                config["partitions"]["final_fit_count"] + config["partitions"]["final_test_count"],
+                config["task"]["feature_count_before_filter"],
+            ]
             or len(gene_ids) != len(set(gene_ids))
             or len(sample_ids) != len(set(sample_ids))
             or set(sample_ids) != {sample for _, sample in fit_pairs + test_pairs}
         ):
             raise ValueError("All-gene schema differs from frozen population")
-        provenance = verify_split_provenance(
-            split,
-            cohort_path=self._path(config, "cohort"),
-            historical_config_path=self.root / "configs/default.yaml",
-            historical_matrix_path=self.root / "data/processed/ml_expression_matrix.tsv.gz",
-            historical_matrix_manifest_path=self.root / "data/processed/ml_matrix_manifest.json",
+        historical = verify_historical_config(
+            self.root / "configs/default.yaml", split["configuration"]["sha256"]
         )
+        historical_manifest = self.root / "data/processed/ml_matrix_manifest.json"
+        expected_historical_manifest = split["expression_matrix_header_validation"][
+            "matrix_manifest_sha256"
+        ]
+        if sha256_file(historical_manifest) != expected_historical_manifest:
+            raise ValueError("Historical matrix manifest checksum differs from frozen split")
+        hashes["historical_matrix_manifest"] = expected_historical_manifest
+        training_predictions = self.root / "data/processed/modeling_v1/oof_predictions.tsv"
+        validation_predictions = (
+            self.root / "data/processed/validation_v1/validation_predictions.tsv"
+        )
+        for manifest_key, artifact, hash_key in (
+            ("phase2b_manifest", training_predictions, "training_oof_predictions"),
+            ("phase2c_manifest", validation_predictions, "validation_predictions"),
+        ):
+            manifest = json.loads(self._path(config, manifest_key).read_text(encoding="utf-8"))
+            recorded = manifest["output_hashes"][artifact.name]
+            actual = sha256_file(artifact)
+            if actual != recorded:
+                raise ValueError(f"Training-side label artifact checksum mismatch: {artifact.name}")
+            hashes[hash_key] = actual
+        fit_manifest_path = self.root / FIT_EXPRESSION_MANIFEST_PATH
+        fit_manifest = json.loads(fit_manifest_path.read_text(encoding="utf-8"))
+        fit_expression_path = self.root / FIT_EXPRESSION_PATH
+        if fit_manifest != {
+            "schema_version": 1,
+            "source_all_gene_expression_sha256": expected["all_gene_expression"],
+            "frozen_split_sha256": expected["frozen_split"],
+            "ordered_fit_identity_sha256": identity_digest(fit_pairs),
+            "ordered_gene_list_sha256": sequence_digest(gene_ids),
+            "shape": [len(fit_pairs), len(gene_ids)],
+            "dtype": schema["dtype"],
+            "fit_expression_sha256": sha256_file(fit_expression_path),
+        }:
+            raise ValueError("Fitting-only expression artifact lacks approved provenance")
+        fit_array = np.load(fit_expression_path, mmap_mode="r", allow_pickle=False)
+        if fit_array.shape != (len(fit_pairs), len(gene_ids)) or fit_array.dtype != np.dtype(
+            schema["dtype"]
+        ):
+            raise ValueError("Fitting-only expression shape or dtype differs from schema")
+        hashes["fit_expression"] = fit_manifest["fit_expression_sha256"]
+        hashes["fit_expression_manifest"] = sha256_file(fit_manifest_path)
         return Snapshot(
             fit_pairs,
             test_pairs,
             gene_ids,
             sample_ids,
             hashes,
-            provenance["historical_config"]["compatibility_mode"],
+            historical["compatibility_mode"],
         )
 
-    def _selected_expression(
-        self, snapshot: Snapshot, pairs: tuple[tuple[str, str], ...], config: dict[str, Any]
-    ) -> pd.DataFrame:
+    def begin_test_access(self) -> None:
+        self.test_access_started = True
+
+    def verify_full_provenance(self, snapshot: Snapshot) -> Snapshot:
+        """Access full-cohort bytes only after the explicit test-access transition."""
+        if not self.test_access_started:
+            raise AuthorizationError("Full-cohort provenance requires the test-access stage")
+        expected = self.config["inputs"]["expected_sha256"]
+        hashes = dict(snapshot.input_hashes)
+        for key in TEST_CONTAINING_INPUTS:
+            actual = sha256_file(self._path(self.config, key))
+            if actual != expected[key]:
+                raise ValueError(f"Frozen full-cohort checksum mismatch: {key}")
+            hashes[key] = actual
+        split = json.loads(self._path(self.config, "frozen_split").read_text(encoding="utf-8"))
+        provenance = verify_split_provenance(
+            split,
+            cohort_path=self._path(self.config, "cohort"),
+            historical_config_path=self.root / "configs/default.yaml",
+            historical_matrix_path=self.root / "data/processed/ml_expression_matrix.tsv.gz",
+            historical_matrix_manifest_path=self.root / "data/processed/ml_matrix_manifest.json",
+        )
+        hashes["historical_matrix"] = provenance["historical_matrix_sha256"]
+        all_values = np.load(
+            self._path(self.config, "all_gene_expression"), mmap_mode="r", allow_pickle=False
+        )
+        fit_values = np.load(self.root / FIT_EXPRESSION_PATH, mmap_mode="r", allow_pickle=False)
+        positions = {sample: i for i, sample in enumerate(snapshot.sample_ids)}
+        fit_rows = [positions[sample] for _, sample in snapshot.fit_pairs]
+        if not np.array_equal(np.asarray(fit_values), all_values[fit_rows, :]):
+            raise ValueError("Fitting-only expression differs from the verified original view")
+        self.full_provenance_verified = True
+        return replace(snapshot, input_hashes=hashes)
+
+    def _fit_expression(self, snapshot: Snapshot) -> pd.DataFrame:
+        """Open only the fitting-only artifact; never the full-cohort array."""
+        path = self.root / FIT_EXPRESSION_PATH
+        if sha256_file(path) != snapshot.input_hashes["fit_expression"]:
+            raise ValueError("Fitting-only expression changed after preflight")
+        values = np.load(path, mmap_mode="r", allow_pickle=False)
+        if values.shape != (len(snapshot.fit_pairs), len(snapshot.gene_ids)):
+            raise ValueError("Fitting-only array shape differs from frozen schema")
+        selected = np.asarray(values)
+        if not np.isfinite(selected).all():
+            raise ValueError("Fitting-only expression includes nonfinite values")
+        return pd.DataFrame(
+            selected,
+            index=tuple(sample for _, sample in snapshot.fit_pairs),
+            columns=snapshot.gene_ids,
+        )
+
+    def _test_expression(self, snapshot: Snapshot) -> pd.DataFrame:
+        if not self.full_provenance_verified:
+            raise AuthorizationError("Test expression requires verified full-cohort provenance")
         positions = {sample: i for i, sample in enumerate(snapshot.sample_ids)}
         values = np.load(
-            self._path(config, "all_gene_expression"), mmap_mode="r", allow_pickle=False
+            self._path(self.config, "all_gene_expression"), mmap_mode="r", allow_pickle=False
         )
         if values.shape != (len(snapshot.sample_ids), len(snapshot.gene_ids)):
             raise ValueError("All-gene array shape differs from schema")
-        samples = tuple(sample for _, sample in pairs)
+        samples = tuple(sample for _, sample in snapshot.test_pairs)
         selected = values[[positions[s] for s in samples], :]
         if not np.isfinite(selected).all():
             raise ValueError("Selected expression includes nonfinite values")
         return pd.DataFrame(selected, index=samples, columns=snapshot.gene_ids)
 
-    def _labels_for(self, config: dict[str, Any], pairs: tuple[tuple[str, str], ...]) -> np.ndarray:
+    def _fit_labels(self, snapshot: Snapshot) -> np.ndarray:
+        """Read only previously sealed training and validation prediction artifacts."""
+        sections = (
+            (
+                self.root / "data/processed/modeling_v1/oof_predictions.tsv",
+                snapshot.fit_pairs[: self.config["partitions"]["original_train"]],
+                True,
+            ),
+            (
+                self.root / "data/processed/validation_v1/validation_predictions.tsv",
+                snapshot.fit_pairs[self.config["partitions"]["original_train"] :],
+                False,
+            ),
+        )
+        labels: list[str] = []
+        for path, pairs, is_training in sections:
+            hash_key = "training_oof_predictions" if is_training else "validation_predictions"
+            if sha256_file(path) != snapshot.input_hashes[hash_key]:
+                raise ValueError("Fitting-only labels changed after preflight")
+            found: dict[tuple[str, str], str] = {}
+            with path.open("r", encoding="utf-8", newline="") as handle:
+                for row in csv.DictReader(handle, delimiter="\t"):
+                    if is_training and (row["model"], row["C"]) != (
+                        "logistic_l2_multinomial",
+                        "1.0",
+                    ):
+                        continue
+                    pair = (row["patient_id"], row["sample_id"])
+                    if pair in found:
+                        raise ValueError("Duplicate fitting label in training-side artifact")
+                    found[pair] = row["true_label"]
+            if set(found) != set(pairs):
+                raise ValueError("Training-side label artifact differs from frozen fit membership")
+            labels.extend(found[pair] for pair in pairs)
+        return np.asarray(labels, dtype=object)
+
+    def _test_labels_from_cohort(self, pairs: tuple[tuple[str, str], ...]) -> np.ndarray:
+        if not self.full_provenance_verified or not self.predictions_saved:
+            raise AuthorizationError("Test labels require authorized access and sealed predictions")
         wanted = set(pairs)
         found: dict[tuple[str, str], str] = {}
-        with self._path(config, "cohort").open("r", encoding="utf-8-sig", newline="") as handle:
+        with self._path(self.config, "cohort").open(
+            "r", encoding="utf-8-sig", newline=""
+        ) as handle:
             for row in csv.DictReader(handle, delimiter="\t"):
                 pair = (row["patient_id"], row["sample_id"])
                 if pair in wanted:
@@ -646,25 +855,29 @@ class RealSource:
     def load_fit(self, snapshot: Snapshot) -> FitData:
         pairs = snapshot.fit_pairs
         return FitData(
-            self._selected_expression(snapshot, pairs, self.config),
-            self._labels_for(self.config, pairs),
+            self._fit_expression(snapshot),
+            self._fit_labels(snapshot),
             tuple(patient for patient, _ in pairs),
             tuple(sample for _, sample in pairs),
         )
 
     def load_test_expression(self, snapshot: Snapshot) -> TestData:
+        if not self.full_provenance_verified:
+            raise AuthorizationError("Test expression requires the explicit test-access stage")
         pairs = snapshot.test_pairs
         return TestData(
-            self._selected_expression(snapshot, pairs, self.config),
+            self._test_expression(snapshot),
             tuple(patient for patient, _ in pairs),
             tuple(sample for _, sample in pairs),
         )
 
     def load_test_labels(self, snapshot: Snapshot) -> np.ndarray:
-        return self._labels_for(self.config, snapshot.test_pairs)
+        return self._test_labels_from_cohort(snapshot.test_pairs)
 
     def note_predictions_saved(self) -> None:
-        pass
+        if not self.full_provenance_verified:
+            raise AuthorizationError("Predictions cannot be sealed before test authorization")
+        self.predictions_saved = True
 
 
 def verify_real_authorization(
