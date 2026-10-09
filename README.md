@@ -9,7 +9,7 @@
 
 ## Status
 
-**Data-preparation Phases 1A–1G are implemented.** The workflow acquires public UCSC Xena TCGA-BRCA inputs, defines and quality-checks the approved cohort, creates a processed expression matrix, freezes a patient-level train/validation/test split, and commits a compact demo subset. The demo contains 10 training samples across all five normalized PAM50 classes and 100 genes; the full cohort, processed matrix, and frozen split remain local-only. No model training, performance evaluation, differential expression, GSEA, or biological claims have been made.
+**Data-preparation Phases 1A–1G and training-only Phase 2B cross-validation are implemented.** The workflow acquires public UCSC Xena TCGA-BRCA inputs, defines and quality-checks the approved cohort, creates a processed expression matrix, freezes a patient-level train/validation/test split, and commits a compact demo subset. Phase 2B compares a majority baseline with L2 multinomial logistic regression across four training-only folds; see the [Phase 2B report](reports/phase_2b_training_cv.md). The full cohort, processed matrix, frozen split, and patient-level CV predictions remain local-only. No full-training model, validation/test evaluation, differential expression, GSEA, or biological claims have been made.
 
 ## Goal
 
@@ -58,6 +58,8 @@ The tracked demo tables in [`data/demo/`](data/demo/) can be inspected without d
 - A patient—not an aliquot or sample—is the unit for the frozen split. Future feature selection and tuning must stay inside training folds. PAM50 prediction is label reconstruction, not a claim of discovering new PAM50 biomarkers.
 
 See [`docs/data_provenance.md`](docs/data_provenance.md) for source URLs, checksums, and usage notes; [`docs/data_splits.md`](docs/data_splits.md) for the frozen split; [`docs/demo_dataset.md`](docs/demo_dataset.md) for the demo rules; and the [`project charter`](docs/project_charter.md) and [`model card`](docs/model_card.md) for scope and limitations.
+
+For the training-only experiment, use Python 3.11 and run `python scripts/run_training_cv.py` after preparing the local `preprocessing_v1` artifacts. The versioned [modeling configuration](configs/modeling_v1.yaml) fixes four stratified folds, the gene filter, scaler, and logistic `C` grid. The command writes local-only results to `data/processed/modeling_v1/` and refuses to overwrite them.
 
 ## Repository map
 

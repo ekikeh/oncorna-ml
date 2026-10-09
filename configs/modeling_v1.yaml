@@ -1,0 +1,35 @@
+version: modeling_v1
+preprocessing_manifest: data/processed/preprocessing_v1/manifest.json
+all_gene_schema: data/processed/preprocessing_v1/all_gene_schema.json
+all_gene_expression: data/processed/preprocessing_v1/all_gene_expression.npy
+cohort: data/processed/classification_cohort.tsv
+split: data/processed/split_v1.json
+source_expression: data/raw/TCGA-BRCA_HiSeqV2.tsv.gz
+expected_split_sha256: 33e464aa58a69bed96740ef76b011ad23689acf2ed3baef79729b62057a2e26d
+expected_cohort_sha256: d3b117a31266ee7c790b7cc9a7a29edc98ca71e020c6087192b3c6340afa8ca9
+expected_source_sha256: 263bf67245cc4b9062676583c0ff0306f08471a26aafd5504037e1da22133746
+expected_all_gene_sha256: 692eb3c5a3cc215ac8f58ac5186a8b6f0a296acded4dde5eb07fbb37f54030d3
+expected_schema_sha256: fd37450af00617cae23e31bffdca1ed23b65e90309b16ef68946f99e64fef161
+output_dir: data/processed/modeling_v1
+labels:
+  - Luminal A
+  - Luminal B
+  - Basal-like
+  - HER2-enriched
+  - Normal-like
+training_size: 506
+gene_count: 20530
+cv_folds: 4
+cv_seed: 20261009
+expression_gt: 1.0
+minimum_sample_fraction: 0.20
+solver: lbfgs
+penalty: l2
+class_weight: null
+fit_intercept: true
+max_iter: 1000
+tol: 0.0001
+c_values: [0.001, 0.01, 0.1, 1.0]
+primary_metric: macro_f1
+zero_division: 0
+n_jobs: 1

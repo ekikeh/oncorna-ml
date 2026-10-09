@@ -1,6 +1,6 @@
 # Project charter — OncoRNA-ML
 
-**Status:** Data-preparation Phases 1A–1G are implemented. The selected public source, approved cohort, processed matrix, frozen patient-level split, and compact attributed demo are documented in `docs/`; no model training or evaluation, differential expression, enrichment analysis, or biological interpretation has started.
+**Status:** Data-preparation Phases 1A–1G and training-only Phase 2B cross-validation are implemented. The selected public source, approved cohort, processed matrix, frozen patient-level split, and compact attributed demo are documented in `docs/`. Phase 2B development metrics are in [the report](../reports/phase_2b_training_cv.md); no full-training model, validation/test evaluation, differential expression, enrichment analysis, or biological interpretation has started.
 
 ## Research question
 
