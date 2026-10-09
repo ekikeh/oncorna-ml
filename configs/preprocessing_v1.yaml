@@ -1,0 +1,16 @@
+# Leakage-safe preprocessing foundation. Phase 1 artifacts remain unchanged.
+version: preprocessing_v1
+expression_path: data/raw/TCGA-BRCA_HiSeqV2.tsv.gz
+cohort_path: data/processed/classification_cohort.tsv
+split_path: data/processed/split_v1.json
+historical_config_path: configs/default.yaml
+historical_matrix_path: data/processed/ml_expression_matrix.tsv.gz
+historical_matrix_manifest_path: data/processed/ml_matrix_manifest.json
+output_dir: data/processed/preprocessing_v1
+expected_source_sha256: 263bf67245cc4b9062676583c0ff0306f08471a26aafd5504037e1da22133746
+expected_split_sha256: 33e464aa58a69bed96740ef76b011ad23689acf2ed3baef79729b62057a2e26d
+expected_gene_count: 20530
+expected_cohort_size: 844
+expected_training_size: 506
+expression_gt: 1.0
+minimum_sample_fraction: 0.20
