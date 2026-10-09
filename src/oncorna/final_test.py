@@ -23,6 +23,7 @@ import pandas as pd
 import sklearn
 from sklearn.exceptions import ConvergenceWarning
 
+from oncorna.final_fit_export import ArrayHeader, ExportPlan, verify_completed_export
 from oncorna.modeling import make_pipeline, scores
 from oncorna.preprocessing import (
     identity_digest,
@@ -702,17 +703,29 @@ class RealSource:
         fit_manifest_path = self.root / FIT_EXPRESSION_MANIFEST_PATH
         fit_manifest = json.loads(fit_manifest_path.read_text(encoding="utf-8"))
         fit_expression_path = self.root / FIT_EXPRESSION_PATH
-        if fit_manifest != {
-            "schema_version": 1,
-            "source_all_gene_expression_sha256": expected["all_gene_expression"],
-            "frozen_split_sha256": expected["frozen_split"],
-            "ordered_fit_identity_sha256": identity_digest(fit_pairs),
-            "ordered_gene_list_sha256": sequence_digest(gene_ids),
-            "shape": [len(fit_pairs), len(gene_ids)],
-            "dtype": schema["dtype"],
-            "fit_expression_sha256": sha256_file(fit_expression_path),
-        }:
-            raise ValueError("Fitting-only expression artifact lacks approved provenance")
+        plan = ExportPlan(
+            source_array=self._path(config, "all_gene_expression"),
+            output_dir=self.root / FIT_EXPRESSION_PATH.parent,
+            fit_pairs=fit_pairs,
+            test_pairs=test_pairs,
+            sample_ids=sample_ids,
+            gene_ids=gene_ids,
+            frozen_split_sha256=expected["frozen_split"],
+            source_schema_sha256=expected["all_gene_schema"],
+            source_all_gene_expression_sha256=expected["all_gene_expression"],
+            source_expression_sha256=expected["source_expression"],
+            approved_cohort_identifier="TCGA-BRCA Xena primary-tumor cohort",
+            approved_cohort_path=config["inputs"]["cohort"],
+            approved_cohort_sha256=expected["cohort"],
+            expression_units=schema["expression_units"],
+            command=fit_manifest.get("command", ""),
+        )
+        header = ArrayHeader(
+            tuple(schema["shape"]),
+            fit_manifest.get("source_array_data_offset", -1),
+            len(gene_ids) * 8,
+        )
+        verify_completed_export(fit_expression_path.parent, plan, header)
         fit_array = np.load(fit_expression_path, mmap_mode="r", allow_pickle=False)
         if fit_array.shape != (len(fit_pairs), len(gene_ids)) or fit_array.dtype != np.dtype(
             schema["dtype"]

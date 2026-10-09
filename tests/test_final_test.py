@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 import oncorna.final_test as final_test_module
+from oncorna.final_fit_export import ExportPlan, export_synthetic
 from oncorna.final_test import (
     AuthorizationError,
     FitData,
@@ -121,9 +122,12 @@ def synthetic_real_adapter_metadata(root: Path) -> tuple[dict, SyntheticFixtureS
         "expression_matrix_header_validation": {"matrix_manifest_sha256": matrix_manifest_hash},
         "partitions": {
             name: {
+                "n_patients": len(pairs),
+                "patient_ids": [patient for patient, _ in pairs],
+                "sample_ids": [sample for _, sample in pairs],
                 "patient_sample_map": [
                     {"patient_id": patient, "sample_id": sample} for patient, sample in pairs
-                ]
+                ],
             }
             for name, pairs in (
                 ("train", train_pairs),
@@ -179,24 +183,29 @@ def synthetic_real_adapter_metadata(root: Path) -> tuple[dict, SyntheticFixtureS
         else:
             content = "synthetic metadata\n"
         config["inputs"]["expected_sha256"][key] = write(target, content)
-    fit_expression = root / final_test_module.FIT_EXPRESSION_PATH
-    fit_expression.parent.mkdir(parents=True, exist_ok=True)
-    np.save(fit_expression, fixture.fit.X.to_numpy())
-    fit_manifest = {
-        "schema_version": 1,
-        "source_all_gene_expression_sha256": config["inputs"]["expected_sha256"][
-            "all_gene_expression"
-        ],
-        "frozen_split_sha256": config["inputs"]["expected_sha256"]["frozen_split"],
-        "ordered_fit_identity_sha256": final_test_module.identity_digest(
-            tuple(train_pairs + validation_pairs)
-        ),
-        "ordered_gene_list_sha256": final_test_module.sequence_digest(tuple(schema["gene_ids"])),
-        "shape": [40, 6],
-        "dtype": "float64",
-        "fit_expression_sha256": hashlib.sha256(fit_expression.read_bytes()).hexdigest(),
-    }
-    write(root / final_test_module.FIT_EXPRESSION_MANIFEST_PATH, json.dumps(fit_manifest))
+    synthetic_array = root / "synthetic_source.npy"
+    np.save(synthetic_array, np.vstack([fixture.fit.X.to_numpy(), fixture.test.X.to_numpy()]))
+    export_synthetic(
+        ExportPlan(
+            source_array=synthetic_array,
+            output_dir=root / final_test_module.FIT_EXPRESSION_PATH.parent,
+            fit_pairs=tuple(train_pairs + validation_pairs),
+            test_pairs=tuple(test_pairs),
+            sample_ids=tuple(schema["sample_ids"]),
+            gene_ids=tuple(schema["gene_ids"]),
+            frozen_split_sha256=config["inputs"]["expected_sha256"]["frozen_split"],
+            source_schema_sha256=config["inputs"]["expected_sha256"]["all_gene_schema"],
+            source_all_gene_expression_sha256=config["inputs"]["expected_sha256"][
+                "all_gene_expression"
+            ],
+            source_expression_sha256=config["inputs"]["expected_sha256"]["source_expression"],
+            approved_cohort_identifier="TCGA-BRCA Xena primary-tumor cohort",
+            approved_cohort_path=config["inputs"]["cohort"],
+            approved_cohort_sha256=config["inputs"]["expected_sha256"]["cohort"],
+            expression_units=config["task"]["expression_units"],
+            command="synthetic fixture export",
+        )
+    )
     return config, fixture
 
 
