@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -22,6 +24,7 @@ CONFIG_SHA256 = "1cadc4bce4d891f904a06409ba12794afa854abf8733276dc4484e2f074baa3
 SPLIT_SHA256 = "33e464aa58a69bed96740ef76b011ad23689acf2ed3baef79729b62057a2e26d"
 OUTPUT_DIRECTORY = Path("data/processed/final_fit_v1")
 AUTHORIZATION_PATH = Path("data/processed/final_fit_v1_authorization.json")
+ATTEMPT_MARKER_PATH = Path("data/processed/final_fit_v1_attempt.json")
 
 
 def expected_authorization(plan: ExportPlan, revision: str) -> dict[str, str]:
@@ -69,6 +72,8 @@ def prepare_real_export(root: Path, authorization_path: Path) -> ExportPlan:
         raise PermissionError("Real export output escapes the approved repository")
     if output.exists():
         raise FileExistsError("A fitting-only export attempt already exists")
+    if (root / ATTEMPT_MARKER_PATH).exists():
+        raise FileExistsError("A one-time fitting-only export attempt was already claimed")
     config_bytes = config_path.read_bytes()
     if (
         hashlib.sha256(config_bytes).hexdigest() != CONFIG_SHA256
@@ -111,9 +116,40 @@ def prepare_real_export(root: Path, authorization_path: Path) -> ExportPlan:
     return plan
 
 
+def claim_real_export_attempt(root: Path, authorization_path: Path, plan: ExportPlan) -> None:
+    """Consume the fixed one-attempt authorization before creating output files."""
+    root = root.resolve()
+    if plan.output_dir != root / OUTPUT_DIRECTORY:
+        raise PermissionError("Real export output path differs from the approved fixed path")
+    if authorization_path.resolve() != (root / AUTHORIZATION_PATH).resolve():
+        raise PermissionError("Real export requires the fixed local authorization path")
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=root, text=True).strip()
+    if dirty:
+        raise PermissionError("Real export requires a clean reviewed Git revision")
+    authorization_bytes = authorization_path.read_bytes()
+    verify_authorization_record(
+        json.loads(authorization_bytes.decode("utf-8")), expected_authorization(plan, revision)
+    )
+    marker = root / ATTEMPT_MARKER_PATH
+    record = {
+        "status": "attempt_claimed",
+        "authorization_sha256": hashlib.sha256(authorization_bytes).hexdigest(),
+        "ordered_fit_identity_sha256": identity_digest(plan.fit_pairs),
+        "ordered_gene_list_sha256": sequence_digest(plan.gene_ids),
+        "output_directory": OUTPUT_DIRECTORY.as_posix(),
+        "claimed_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    with marker.open("x", encoding="utf-8", newline="\n") as handle:
+        json.dump(record, handle, sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def run_real_export(root: Path, authorization_path: Path | None = None) -> dict[str, object]:
     """Prepare the fixed authorized plan; the shared writer still denies real mode."""
     if authorization_path is None:
         raise PermissionError("A separate real-export authorization record is required")
     plan = prepare_real_export(root, authorization_path)
-    return _export_exact_ranges(plan, real=True)
+    return _export_exact_ranges(plan, real=True, root=root, authorization_path=authorization_path)

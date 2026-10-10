@@ -458,6 +458,7 @@ def synthetic_real_preparation(
             "expected_sha256": {
                 "all_gene_expression": "a" * 64,
                 "all_gene_schema": schema_hash,
+                "frozen_split": split_hash,
                 "source_expression": "b" * 64,
                 "cohort": "c" * 64,
             },
@@ -495,7 +496,7 @@ def synthetic_real_preparation(
     return root, auth_path, record
 
 
-def test_real_preparation_uses_only_frozen_synthetic_metadata_and_stays_locked(
+def test_real_preparation_uses_only_frozen_synthetic_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root, auth_path, _ = synthetic_real_preparation(tmp_path, monkeypatch)
@@ -505,8 +506,6 @@ def test_real_preparation_uses_only_frozen_synthetic_metadata_and_stays_locked(
     assert len(plan.gene_ids) == 20530
     assert plan.output_dir == root / real_module.OUTPUT_DIRECTORY
     assert not plan.source_array.exists()
-    with pytest.raises(PermissionError, match="disabled"):
-        real_module.run_real_export(root, auth_path)
     assert not plan.output_dir.exists()
 
 
@@ -552,6 +551,117 @@ def test_real_mode_denies_direct_shared_writer_before_output(
 ) -> None:
     plan, _ = fixture_plan(tmp_path)
     monkeypatch.setattr(export_module, "_read_row", lambda *_: pytest.fail("expression row read"))
-    with pytest.raises(PermissionError, match="disabled"):
+    with pytest.raises(PermissionError, match="fixed authorization"):
         export_module._export_exact_ranges(plan, real=True)
     assert not plan.output_dir.exists()
+
+
+def test_activated_path_extracts_only_synthetic_fit_rows_and_consumes_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, values = fixture_plan(tmp_path)
+    plan = replace(plan, output_dir=tmp_path / real_module.OUTPUT_DIRECTORY)
+    plan.output_dir.parent.mkdir(parents=True)
+    authorization_path = tmp_path / real_module.AUTHORIZATION_PATH
+    authorization_path.write_text(
+        json.dumps(real_module.expected_authorization(plan, "synthetic-reviewed-revision")),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(real_module, "prepare_real_export", lambda *_args: plan)
+    monkeypatch.setattr(
+        real_module.subprocess,
+        "check_output",
+        lambda args, **_kwargs: "synthetic-reviewed-revision\n" if args[-1] == "HEAD" else "",
+    )
+    requested: list[int] = []
+    original = export_module._read_row
+
+    def observe(handle: object, header: export_module.ArrayHeader, index: int) -> bytes:
+        requested.append(index)
+        return original(handle, header, index)
+
+    monkeypatch.setattr(export_module, "_read_row", observe)
+    manifest = real_module.run_real_export(tmp_path, authorization_path)
+    assert requested == [7, 0, 4, 2, 5] * 2
+    assert set(requested).isdisjoint({1, 3, 6})
+    assert np.array_equal(
+        np.load(plan.output_dir / "fit_expression.npy", allow_pickle=False),
+        values[[7, 0, 4, 2, 5], :],
+    )
+    assert manifest["source_hash_verified_at_export"] is False
+    assert (plan.output_dir / "success.json").exists()
+    assert (tmp_path / real_module.ATTEMPT_MARKER_PATH).exists()
+    assert (
+        verify_completed_export(
+            plan.output_dir, plan, inspect_npy_header(plan.source_array, (8, 4))
+        )
+        == manifest
+    )
+    with pytest.raises(FileExistsError):
+        real_module.run_real_export(tmp_path, authorization_path)
+
+
+def test_activated_path_keeps_failed_attempt_and_refuses_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, _ = fixture_plan(tmp_path)
+    plan = replace(plan, output_dir=tmp_path / real_module.OUTPUT_DIRECTORY)
+    plan.output_dir.parent.mkdir(parents=True)
+    authorization_path = tmp_path / real_module.AUTHORIZATION_PATH
+    authorization_path.write_text(
+        json.dumps(real_module.expected_authorization(plan, "synthetic-reviewed-revision")),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(real_module, "prepare_real_export", lambda *_args: plan)
+    monkeypatch.setattr(
+        real_module.subprocess,
+        "check_output",
+        lambda args, **_kwargs: "synthetic-reviewed-revision\n" if args[-1] == "HEAD" else "",
+    )
+    original = export_module._read_row
+    calls = 0
+
+    def mutate(handle: object, header: export_module.ArrayHeader, index: int) -> bytes:
+        nonlocal calls
+        row = original(handle, header, index)
+        calls += 1
+        if calls == len(plan.fit_pairs):
+            changed = plan.source_array.stat().st_mtime_ns + 2_000_000_000
+            os.utime(plan.source_array, ns=(changed, changed))
+        return row
+
+    monkeypatch.setattr(export_module, "_read_row", mutate)
+    with pytest.raises(ValueError, match="metadata changed"):
+        real_module.run_real_export(tmp_path, authorization_path)
+    assert (plan.output_dir / "failure.json").exists()
+    assert not (plan.output_dir / "success.json").exists()
+    assert (tmp_path / real_module.ATTEMPT_MARKER_PATH).exists()
+    with pytest.raises(FileExistsError):
+        real_module.run_real_export(tmp_path, authorization_path)
+
+
+def test_export_record_cannot_authorize_final_test(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, authorization_path, _ = synthetic_real_preparation(tmp_path, monkeypatch)
+    config_path = root / "configs/final_test_v1.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    config["outputs"] = {"directory": "data/processed/final_test_v1"}
+    with pytest.raises(final_test_module.AuthorizationError, match="does not bind"):
+        final_test_module.verify_real_authorization(root, config_path, config, authorization_path)
+
+
+def test_real_export_rejects_missing_record_and_existing_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, authorization_path, record = synthetic_real_preparation(tmp_path, monkeypatch)
+    with pytest.raises(PermissionError, match="record is required"):
+        real_module.run_real_export(root)
+    authorization_path.unlink()
+    with pytest.raises(FileNotFoundError):
+        real_module.prepare_real_export(root, authorization_path)
+    authorization_path.write_text(json.dumps(record), encoding="utf-8")
+    output = root / real_module.OUTPUT_DIRECTORY
+    output.mkdir(parents=True)
+    with pytest.raises(FileExistsError, match="already exists"):
+        real_module.prepare_real_export(root, authorization_path)

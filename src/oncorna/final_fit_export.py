@@ -467,12 +467,25 @@ def verify_completed_export(output: Path, plan: ExportPlan, header: ArrayHeader)
     return manifest
 
 
-def _export_exact_ranges(plan: ExportPlan, *, real: bool) -> dict[str, Any]:
-    """Shared row writer; a later reviewed code revision must unlock real mode."""
+def _export_exact_ranges(
+    plan: ExportPlan,
+    *,
+    real: bool,
+    root: Path | None = None,
+    authorization_path: Path | None = None,
+) -> dict[str, Any]:
+    """Shared row writer with a fixed authorization and one-attempt real boundary."""
     if type(real) is not bool:
         raise PermissionError("Invalid fitting-only export mode")
     if real:
-        raise PermissionError("Real fitting-only export remains disabled pending separate approval")
+        if root is None or authorization_path is None:
+            raise PermissionError("Real export requires the fixed authorization record")
+        from oncorna.final_fit_real import claim_real_export_attempt, prepare_real_export
+
+        verified_plan = prepare_real_export(root, authorization_path)
+        if plan != verified_plan:
+            raise PermissionError("Real export plan differs from verified frozen metadata")
+        claim_real_export_attempt(root, authorization_path, plan)
     else:
         all_ids = [value for pair in plan.fit_pairs + plan.test_pairs for value in pair]
         project_data = Path(__file__).resolve().parents[2] / "data"
