@@ -23,7 +23,12 @@ import pandas as pd
 import sklearn
 from sklearn.exceptions import ConvergenceWarning
 
-from oncorna.final_fit_export import ArrayHeader, ExportPlan, verify_completed_export
+from oncorna.final_fit_export import (
+    ArrayHeader,
+    ExportPlan,
+    verify_completed_export,
+    verify_source_header_at_test_access,
+)
 from oncorna.modeling import make_pipeline, scores
 from oncorna.preprocessing import (
     identity_digest,
@@ -756,6 +761,15 @@ class RealSource:
             if actual != expected[key]:
                 raise ValueError(f"Frozen full-cohort checksum mismatch: {key}")
             hashes[key] = actual
+        fit_manifest_path = self.root / FIT_EXPRESSION_MANIFEST_PATH
+        if sha256_file(fit_manifest_path) != snapshot.input_hashes["fit_expression_manifest"]:
+            raise ValueError("Fitting-only manifest changed after preflight")
+        fit_manifest = json.loads(fit_manifest_path.read_text(encoding="utf-8"))
+        verify_source_header_at_test_access(
+            self._path(self.config, "all_gene_expression"),
+            (len(snapshot.sample_ids), len(snapshot.gene_ids)),
+            fit_manifest["source_array_data_offset"],
+        )
         split = json.loads(self._path(self.config, "frozen_split").read_text(encoding="utf-8"))
         provenance = verify_split_provenance(
             split,

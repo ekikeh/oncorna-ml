@@ -8,7 +8,7 @@ import json
 import os
 import platform
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -61,6 +61,15 @@ class ArrayHeader:
 
 
 @dataclass(frozen=True)
+class FileFingerprint:
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+@dataclass(frozen=True)
 class ExportPlan:
     source_array: Path
     output_dir: Path
@@ -104,45 +113,80 @@ def _read_exact(handle: Any, count: int) -> bytes:
     return b"".join(pieces)
 
 
-def inspect_npy_header(path: Path, expected_shape: tuple[int, int]) -> ArrayHeader:
-    """Read only the NumPy header and validate exact C-order little-endian float64 layout."""
+def _fingerprint(stat: os.stat_result) -> FileFingerprint:
+    return FileFingerprint(
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+    )
+
+
+def _path_fingerprint(path: Path) -> FileFingerprint:
+    return _fingerprint(path.stat())
+
+
+def _assert_source_stable(handle: Any, path: Path, baseline: FileFingerprint) -> None:
+    if _fingerprint(os.fstat(handle.fileno())) != baseline or _path_fingerprint(path) != baseline:
+        raise ValueError("Source array identity, size, or modification metadata changed")
+
+
+def inspect_npy_header_handle(handle: Any, expected_shape: tuple[int, int]) -> ArrayHeader:
+    """Validate a NumPy header on the same descriptor used to extract rows."""
     if sys.byteorder != "little":
         raise ValueError("Exact-range exporter requires a little-endian host")
-    with path.open("rb", buffering=0) as handle:
-        if _read_exact(handle, 6) != MAGIC:
-            raise ValueError("Invalid NumPy magic header")
-        version = tuple(_read_exact(handle, 2))
-        if version == (1, 0):
-            header_length = int.from_bytes(_read_exact(handle, 2), "little")
-        elif version == (2, 0):
-            header_length = int.from_bytes(_read_exact(handle, 4), "little")
-        else:
-            raise ValueError("Unsupported NumPy array header version")
-        if not 1 <= header_length <= 65536:
-            raise ValueError("Invalid NumPy header length")
-        try:
-            header = ast.literal_eval(_read_exact(handle, header_length).decode("latin1").strip())
-        except (SyntaxError, ValueError, UnicodeDecodeError) as exc:
-            raise ValueError("Corrupt NumPy array header") from exc
-        if not isinstance(header, dict) or set(header) != {"descr", "fortran_order", "shape"}:
-            raise ValueError("Unexpected NumPy array header fields")
-        if header["descr"] != "<f8" or header["fortran_order"] is not False:
-            raise ValueError("Only C-order little-endian float64 arrays are supported")
-        shape = header["shape"]
-        if (
-            not isinstance(shape, tuple)
-            or len(shape) != 2
-            or any(type(value) is not int or value <= 0 for value in shape)
-            or shape != expected_shape
-        ):
-            raise ValueError("NumPy array shape differs from approved schema")
-        offset = handle.tell()
-        if offset % 16:
-            raise ValueError("NumPy data offset is not 16-byte aligned")
-        row_bytes = shape[1] * 8
-        if path.stat().st_size != offset + shape[0] * row_bytes:
-            raise ValueError("NumPy file length differs from header and declared shape")
+    handle.seek(0)
+    if _read_exact(handle, 6) != MAGIC:
+        raise ValueError("Invalid NumPy magic header")
+    version = tuple(_read_exact(handle, 2))
+    if version == (1, 0):
+        header_length = int.from_bytes(_read_exact(handle, 2), "little")
+    elif version == (2, 0):
+        header_length = int.from_bytes(_read_exact(handle, 4), "little")
+    else:
+        raise ValueError("Unsupported NumPy array header version")
+    if not 1 <= header_length <= 65536:
+        raise ValueError("Invalid NumPy header length")
+    try:
+        header = ast.literal_eval(_read_exact(handle, header_length).decode("latin1").strip())
+    except (SyntaxError, ValueError, UnicodeDecodeError) as exc:
+        raise ValueError("Corrupt NumPy array header") from exc
+    if not isinstance(header, dict) or set(header) != {"descr", "fortran_order", "shape"}:
+        raise ValueError("Unexpected NumPy array header fields")
+    if header["descr"] != "<f8" or header["fortran_order"] is not False:
+        raise ValueError("Only C-order little-endian float64 arrays are supported")
+    shape = header["shape"]
+    if (
+        not isinstance(shape, tuple)
+        or len(shape) != 2
+        or any(type(value) is not int or value <= 0 for value in shape)
+        or shape != expected_shape
+    ):
+        raise ValueError("NumPy array shape differs from approved schema")
+    offset = handle.tell()
+    if offset % 16:
+        raise ValueError("NumPy data offset is not 16-byte aligned")
+    row_bytes = shape[1] * 8
+    if os.fstat(handle.fileno()).st_size != offset + shape[0] * row_bytes:
+        raise ValueError("NumPy file length differs from header and declared shape")
     return ArrayHeader(shape, offset, row_bytes)
+
+
+def inspect_npy_header(path: Path, expected_shape: tuple[int, int]) -> ArrayHeader:
+    """Read only the NumPy header and validate exact C-order float64 layout."""
+    with path.open("rb", buffering=0) as handle:
+        return inspect_npy_header_handle(handle, expected_shape)
+
+
+def verify_source_header_at_test_access(
+    path: Path, expected_shape: tuple[int, int], recorded_offset: int
+) -> None:
+    """Independently check the original header after full-source access is authorized."""
+    if type(recorded_offset) is not int or recorded_offset < 0:
+        raise ValueError("Invalid recorded source array data offset")
+    if inspect_npy_header(path, expected_shape).data_offset != recorded_offset:
+        raise ValueError("Original source array data offset differs from export manifest")
 
 
 def plan_from_metadata(
@@ -174,12 +218,14 @@ def plan_from_metadata(
         )
     ):
         raise ValueError("Fitting export requires complete SHA-256 provenance")
-    if sha256_file(split_path) != expected_split_sha256:
+    split_bytes = split_path.read_bytes()
+    schema_bytes = schema_path.read_bytes()
+    if hashlib.sha256(split_bytes).hexdigest() != expected_split_sha256:
         raise ValueError("Frozen split checksum mismatch")
-    if sha256_file(schema_path) != expected_schema_sha256:
+    if hashlib.sha256(schema_bytes).hexdigest() != expected_schema_sha256:
         raise ValueError("All-gene schema checksum mismatch")
-    split = json.loads(split_path.read_text(encoding="utf-8"))
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    split = json.loads(split_bytes.decode("utf-8"))
+    schema = json.loads(schema_bytes.decode("utf-8"))
     if split.get("split_id") != "split_v1" or split.get("split_unit") != "patient_id":
         raise ValueError("Unexpected frozen split identity")
     parts = split["partitions"]
@@ -321,6 +367,20 @@ def expected_manifest(
     }
 
 
+def _exact_types(actual: Any, expected: Any) -> bool:
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return set(actual) == set(expected) and all(
+            _exact_types(actual[key], value) for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            _exact_types(item, value) for item, value in zip(actual, expected, strict=True)
+        )
+    return True
+
+
 def verify_manifest_contract(
     manifest: dict[str, Any], plan: ExportPlan, header: ArrayHeader, artifact_sha256: str
 ) -> None:
@@ -329,8 +389,27 @@ def verify_manifest_contract(
     expected = expected_manifest(plan, header, artifact_sha256)
     for key, value in expected.items():
         if key not in {"software", "command"}:
-            if manifest[key] != value:
+            if not _exact_types(manifest[key], value) or manifest[key] != value:
                 raise ValueError(f"Final-fit manifest integrity mismatch: {key}")
+    if (
+        type(manifest["source_array_data_offset"]) is not int
+        or manifest["source_array_data_offset"] < 0
+        or manifest["source_array_data_offset"] % 16
+    ):
+        raise ValueError("Invalid original array data offset")
+    for key in (
+        "source_expression_sha256",
+        "source_all_gene_expression_sha256",
+        "source_schema_sha256",
+        "frozen_split_sha256",
+        "ordered_fit_identity_sha256",
+        "ordered_gene_list_sha256",
+        "fit_expression_sha256",
+    ):
+        if not _is_sha256(manifest[key]):
+            raise ValueError(f"Invalid SHA-256 manifest field: {key}")
+    if not _is_sha256(manifest["approved_cohort"]["sha256"]):
+        raise ValueError("Invalid approved cohort SHA-256")
     software = manifest["software"]
     if (
         not isinstance(software, dict)
@@ -346,7 +425,7 @@ def verify_manifest_contract(
         raise ValueError("Final-fit export software or command provenance is incomplete")
     selected = manifest["selected_payload_sha256"]
     repeated = manifest["repeat_selected_payload_sha256"]
-    if not _is_sha256(selected) or selected != repeated:
+    if not _is_sha256(selected) or not _is_sha256(repeated) or selected != repeated:
         raise ValueError("Final-fit extraction repeat digest is missing or inconsistent")
 
 
@@ -400,16 +479,19 @@ def export_synthetic(plan: ExportPlan) -> dict[str, Any]:
         raise PermissionError("Real fitting-only export remains disabled")
     output = plan.output_dir
     output.mkdir(parents=True, exist_ok=False)
-    _append_state(output, "reserved")
     stage = "reserved"
     try:
+        _append_state(output, "reserved")
         indices = authorized_row_indices(plan)
-        header = inspect_npy_header(plan.source_array, (len(plan.sample_ids), len(plan.gene_ids)))
-        _append_state(output, "extracting")
-        stage = "extracting"
-        pending = output / ".fit_expression.npy.pending"
-        selected_hash = hashlib.sha256()
         with plan.source_array.open("rb", buffering=0) as source:
+            baseline = _fingerprint(os.fstat(source.fileno()))
+            _assert_source_stable(source, plan.source_array, baseline)
+            header = inspect_npy_header_handle(source, (len(plan.sample_ids), len(plan.gene_ids)))
+            _assert_source_stable(source, plan.source_array, baseline)
+            _append_state(output, "extracting", source_fingerprint=asdict(baseline))
+            stage = "extracting"
+            pending = output / ".fit_expression.npy.pending"
+            selected_hash = hashlib.sha256()
             with pending.open("xb", buffering=0) as target:
                 np.lib.format.write_array_header_1_0(
                     target,
@@ -425,15 +507,17 @@ def export_synthetic(plan: ExportPlan) -> dict[str, Any]:
                     if target.write(row) != len(row):
                         raise OSError("Incomplete fitting-only row write")
                 os.fsync(target.fileno())
+            _assert_source_stable(source, plan.source_array, baseline)
+            repeat_hash = hashlib.sha256()
+            for index in indices:
+                repeat_hash.update(_read_row(source, header, index))
+            _assert_source_stable(source, plan.source_array, baseline)
+            if selected_hash.digest() != repeat_hash.digest():
+                raise ValueError("Repeated fitting-only extraction differs")
+            _append_state(output, "source_stable", source_fingerprint=asdict(baseline))
         output_header = inspect_npy_header(pending, (len(indices), len(plan.gene_ids)))
         if output_header.row_bytes != header.row_bytes:
             raise ValueError("Exported NumPy row width differs from source")
-        repeat_hash = hashlib.sha256()
-        with plan.source_array.open("rb", buffering=0) as source:
-            for index in indices:
-                repeat_hash.update(_read_row(source, header, index))
-        if selected_hash.digest() != repeat_hash.digest():
-            raise ValueError("Repeated fitting-only extraction differs")
         final_array = output / "fit_expression.npy"
         os.replace(pending, final_array)
         artifact_sha = sha256_file(final_array)

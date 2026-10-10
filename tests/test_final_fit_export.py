@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -19,6 +20,12 @@ from oncorna.final_fit_export import (
     plan_from_metadata,
     verify_completed_export,
     verify_manifest_contract,
+    verify_source_header_at_test_access,
+)
+from oncorna.final_fit_real import (
+    expected_authorization,
+    run_real_export,
+    verify_authorization_record,
 )
 
 
@@ -275,3 +282,124 @@ def test_real_id_plan_is_blocked_before_directory_creation(tmp_path: Path) -> No
     with pytest.raises(PermissionError, match="disabled"):
         export_synthetic(altered)
     assert not altered.output_dir.exists()
+
+
+def test_source_modification_between_passes_preserves_failed_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, _ = fixture_plan(tmp_path)
+    original = export_module._read_row
+    calls = 0
+
+    def modify_after_first_pass(
+        handle: object, header: export_module.ArrayHeader, index: int
+    ) -> bytes:
+        nonlocal calls
+        row = original(handle, header, index)
+        calls += 1
+        if calls == len(plan.fit_pairs):
+            modified = plan.source_array.stat().st_mtime_ns + 2_000_000_000
+            os.utime(plan.source_array, ns=(modified, modified))
+        return row
+
+    monkeypatch.setattr(export_module, "_read_row", modify_after_first_pass)
+    with pytest.raises(ValueError, match="metadata changed"):
+        export_synthetic(plan)
+    assert (plan.output_dir / "failure.json").exists()
+    assert not (plan.output_dir / "success.json").exists()
+    with pytest.raises(FileExistsError):
+        export_synthetic(plan)
+
+
+@pytest.mark.parametrize("field", ["inode", "size", "mtime_ns"])
+def test_changed_source_path_identity_or_metadata_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    plan, _ = fixture_plan(tmp_path)
+    original = export_module._path_fingerprint
+    calls = 0
+
+    def changed_path(path: Path) -> export_module.FileFingerprint:
+        nonlocal calls
+        result = original(path)
+        calls += 1
+        if calls >= 3:
+            return replace(result, **{field: getattr(result, field) + 1})
+        return result
+
+    monkeypatch.setattr(export_module, "_path_fingerprint", changed_path)
+    with pytest.raises(ValueError, match="metadata changed"):
+        export_synthetic(plan)
+    assert (plan.output_dir / "failure.json").exists()
+    assert not (plan.output_dir / "success.json").exists()
+
+
+def test_strict_manifest_types_and_original_header_offset(tmp_path: Path) -> None:
+    plan, _ = fixture_plan(tmp_path)
+    manifest = export_synthetic(plan)
+    header = inspect_npy_header(plan.source_array, (8, 4))
+    digest = export_module.sha256_file(plan.output_dir / "fit_expression.npy")
+    for altered in (
+        {**manifest, "fit_patient_count": 5.0},
+        {**manifest, "gene_count": True},
+        {**manifest, "shape": [5.0, 4]},
+        {**manifest, "source_array_shape": (8, 4)},
+        {**manifest, "source_array_data_offset": True},
+        {**manifest, "source_hash_verified_at_export": 0},
+        {**manifest, "approved_cohort": {**manifest["approved_cohort"], "path": 1}},
+        {**manifest, "selected_payload_sha256": 1},
+        {**manifest, "software": {**manifest["software"], "numpy": 1}},
+    ):
+        with pytest.raises(ValueError):
+            verify_manifest_contract(altered, plan, header, digest)
+    verify_source_header_at_test_access(plan.source_array, (8, 4), header.data_offset)
+    with pytest.raises(ValueError, match="offset"):
+        verify_source_header_at_test_access(plan.source_array, (8, 4), header.data_offset + 16)
+
+
+def test_missing_or_mismatched_frozen_provenance_and_count(tmp_path: Path) -> None:
+    plan, _ = fixture_plan(tmp_path)
+    original = plan_from_metadata
+    arguments = {
+        "source_array": plan.source_array,
+        "split_path": tmp_path / "split.json",
+        "schema_path": tmp_path / "schema.json",
+        "output_dir": tmp_path / "never",
+        "expected_split_sha256": plan.frozen_split_sha256,
+        "expected_schema_sha256": plan.source_schema_sha256,
+        "expected_all_gene_sha256": plan.source_all_gene_expression_sha256,
+        "expected_source_sha256": plan.source_expression_sha256,
+        "expected_cohort_sha256": plan.approved_cohort_sha256,
+        "expected_fit_count": 5,
+        "expected_test_count": 3,
+        "expected_gene_count": 4,
+        "approved_cohort_identifier": "synthetic cohort",
+        "command": "synthetic exact-range export",
+    }
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        original(**{**arguments, "expected_split_sha256": "0" * 64})
+    with pytest.raises(ValueError, match="population or schema"):
+        original(**{**arguments, "expected_fit_count": 675})
+    with pytest.raises(ValueError, match="SHA-256 provenance"):
+        original(**{**arguments, "expected_source_sha256": ""})
+    with pytest.raises(FileNotFoundError):
+        original(**{**arguments, "schema_path": tmp_path / "missing-schema.json"})
+
+
+def test_real_export_authorization_contract_remains_locked(tmp_path: Path) -> None:
+    plan, _ = fixture_plan(tmp_path)
+    record = expected_authorization(plan, "reviewed-synthetic-revision")
+    verify_authorization_record(record, record)
+    for altered in (
+        {**record, "approved_commit": "different"},
+        {**record, "manifest_version": "final_fit_v2"},
+        {**record, "output_directory": "other"},
+        {**record, "split_sha256": "0" * 64},
+        {**record, "approved_commit": None},
+        {**record, "unexpected": "value"},
+    ):
+        with pytest.raises(PermissionError):
+            verify_authorization_record(altered, record)
+    with pytest.raises(PermissionError, match="disabled"):
+        run_real_export(tmp_path, tmp_path / "authorization.json")
+    assert not (tmp_path / "data/processed/final_fit_v1").exists()
