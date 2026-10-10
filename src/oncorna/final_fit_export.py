@@ -467,16 +467,21 @@ def verify_completed_export(output: Path, plan: ExportPlan, header: ArrayHeader)
     return manifest
 
 
-def export_synthetic(plan: ExportPlan) -> dict[str, Any]:
-    """Exercise the complete exporter only with SYN-prefixed fixture identities."""
-    all_ids = [value for pair in plan.fit_pairs + plan.test_pairs for value in pair]
-    project_data = Path(__file__).resolve().parents[2] / "data"
-    if (
-        not all(value.startswith("SYN-") for value in all_ids)
-        or plan.source_array.resolve().is_relative_to(project_data.resolve())
-        or plan.output_dir.resolve().is_relative_to(project_data.resolve())
-    ):
-        raise PermissionError("Real fitting-only export remains disabled")
+def _export_exact_ranges(plan: ExportPlan, *, real: bool) -> dict[str, Any]:
+    """Shared row writer; a later reviewed code revision must unlock real mode."""
+    if type(real) is not bool:
+        raise PermissionError("Invalid fitting-only export mode")
+    if real:
+        raise PermissionError("Real fitting-only export remains disabled pending separate approval")
+    else:
+        all_ids = [value for pair in plan.fit_pairs + plan.test_pairs for value in pair]
+        project_data = Path(__file__).resolve().parents[2] / "data"
+        if (
+            not all(value.startswith("SYN-") for value in all_ids)
+            or plan.source_array.resolve().is_relative_to(project_data.resolve())
+            or plan.output_dir.resolve().is_relative_to(project_data.resolve())
+        ):
+            raise PermissionError("Only synthetic fitting-only export is enabled")
     output = plan.output_dir
     output.mkdir(parents=True, exist_ok=False)
     stage = "reserved"
@@ -547,3 +552,8 @@ def export_synthetic(plan: ExportPlan) -> dict[str, Any]:
         except OSError:
             pass  # The exclusive directory remains an incomplete attempt.
         raise
+
+
+def export_synthetic(plan: ExportPlan) -> dict[str, Any]:
+    """Exercise the exact-range implementation only with synthetic fixture identities."""
+    return _export_exact_ranges(plan, real=False)

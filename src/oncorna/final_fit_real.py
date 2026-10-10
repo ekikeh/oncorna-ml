@@ -12,6 +12,7 @@ import yaml
 from oncorna.final_fit_export import (
     VERSION,
     ExportPlan,
+    _export_exact_ranges,
     plan_from_metadata,
     sequence_digest,
 )
@@ -110,6 +111,9 @@ def prepare_real_export(root: Path, authorization_path: Path) -> ExportPlan:
     return plan
 
 
-def run_real_export(root: Path, authorization_path: Path | None = None) -> None:
-    """This release has no enabled real-export execution path."""
-    raise PermissionError("Real fitting-only export remains disabled pending separate approval")
+def run_real_export(root: Path, authorization_path: Path | None = None) -> dict[str, object]:
+    """Prepare the fixed authorized plan; the shared writer still denies real mode."""
+    if authorization_path is None:
+        raise PermissionError("A separate real-export authorization record is required")
+    plan = prepare_real_export(root, authorization_path)
+    return _export_exact_ranges(plan, real=True)

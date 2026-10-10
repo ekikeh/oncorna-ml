@@ -10,8 +10,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
 import oncorna.final_fit_export as export_module
+import oncorna.final_fit_real as real_module
+import oncorna.final_test as final_test_module
 from oncorna.final_fit_export import (
     ExportPlan,
     authorized_row_indices,
@@ -279,7 +282,7 @@ def test_real_id_plan_is_blocked_before_directory_creation(tmp_path: Path) -> No
         plan,
         fit_pairs=(("TCGA-XX-0001", plan.fit_pairs[0][1]),) + plan.fit_pairs[1:],
     )
-    with pytest.raises(PermissionError, match="disabled"):
+    with pytest.raises(PermissionError, match="synthetic"):
         export_synthetic(altered)
     assert not altered.output_dir.exists()
 
@@ -400,6 +403,155 @@ def test_real_export_authorization_contract_remains_locked(tmp_path: Path) -> No
     ):
         with pytest.raises(PermissionError):
             verify_authorization_record(altered, record)
-    with pytest.raises(PermissionError, match="disabled"):
+    with pytest.raises(PermissionError, match="fixed local authorization path"):
         run_real_export(tmp_path, tmp_path / "authorization.json")
     assert not (tmp_path / "data/processed/final_fit_v1").exists()
+
+
+def synthetic_real_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path, dict[str, str]]:
+    """Construct only synthetic metadata; the all-gene expression file stays absent."""
+    root = tmp_path
+    (root / "configs").mkdir()
+    (root / "data/processed/preprocessing_v1").mkdir(parents=True)
+    samples = [f"SYN-S-{i}" for i in range(844)]
+    patients = [f"SYN-P-{i}" for i in range(844)]
+    genes = [f"SYN-G-{i}" for i in range(20530)]
+    sections = {"train": range(506), "validation": range(506, 675), "test": range(675, 844)}
+    split = {
+        "split_id": "split_v1",
+        "split_unit": "patient_id",
+        "source_cohort": {"path": "data/processed/classification_cohort.tsv", "sha256": "c" * 64},
+        "partitions": {
+            name: {
+                "n_patients": len(indices),
+                "patient_ids": [patients[index] for index in indices],
+                "sample_ids": [samples[index] for index in indices],
+                "patient_sample_map": [
+                    {"patient_id": patients[index], "sample_id": samples[index]}
+                    for index in indices
+                ],
+            }
+            for name, indices in sections.items()
+        },
+    }
+    schema = {
+        "sample_ids": samples,
+        "gene_ids": genes,
+        "shape": [844, 20530],
+        "dtype": "float64",
+        "orientation": "samples_by_genes",
+        "expression_units": "log2(normalized_count + 1)",
+    }
+    split_path = root / "data/processed/split_v1.json"
+    schema_path = root / "data/processed/preprocessing_v1/all_gene_schema.json"
+    split_path.write_text(json.dumps(split), encoding="utf-8")
+    schema_path.write_text(json.dumps(schema), encoding="utf-8")
+    split_hash = export_module.sha256_file(split_path)
+    schema_hash = export_module.sha256_file(schema_path)
+    config = {
+        "inputs": {
+            "all_gene_expression": "data/processed/preprocessing_v1/all_gene_expression.npy",
+            "all_gene_schema": "data/processed/preprocessing_v1/all_gene_schema.json",
+            "frozen_split": "data/processed/split_v1.json",
+            "expected_sha256": {
+                "all_gene_expression": "a" * 64,
+                "all_gene_schema": schema_hash,
+                "source_expression": "b" * 64,
+                "cohort": "c" * 64,
+            },
+        }
+    }
+    config_path = root / "configs/final_test_v1.yaml"
+    config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    monkeypatch.setattr(real_module, "CONFIG_SHA256", export_module.sha256_file(config_path))
+    monkeypatch.setattr(real_module, "SPLIT_SHA256", split_hash)
+    monkeypatch.setattr(final_test_module, "validate_protocol", lambda *_args: None)
+
+    def git_read(args: list[str], **_kwargs: object) -> str:
+        return "synthetic-reviewed-revision\n" if args[-1] == "HEAD" else ""
+
+    monkeypatch.setattr(real_module.subprocess, "check_output", git_read)
+    auth_path = root / real_module.AUTHORIZATION_PATH
+    plan = export_module.plan_from_metadata(
+        source_array=root / config["inputs"]["all_gene_expression"],
+        split_path=split_path,
+        schema_path=schema_path,
+        output_dir=root / real_module.OUTPUT_DIRECTORY,
+        expected_split_sha256=split_hash,
+        expected_schema_sha256=schema_hash,
+        expected_all_gene_sha256="a" * 64,
+        expected_source_sha256="b" * 64,
+        expected_cohort_sha256="c" * 64,
+        expected_fit_count=675,
+        expected_test_count=169,
+        expected_gene_count=20530,
+        approved_cohort_identifier="TCGA-BRCA Xena primary-tumor cohort",
+        command="one-attempt final_fit_v1 exact-range export",
+    )
+    record = real_module.expected_authorization(plan, "synthetic-reviewed-revision")
+    auth_path.write_text(json.dumps(record), encoding="utf-8")
+    return root, auth_path, record
+
+
+def test_real_preparation_uses_only_frozen_synthetic_metadata_and_stays_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, auth_path, _ = synthetic_real_preparation(tmp_path, monkeypatch)
+    plan = real_module.prepare_real_export(root, auth_path)
+    assert len(plan.fit_pairs) == 675
+    assert len(plan.test_pairs) == 169
+    assert len(plan.gene_ids) == 20530
+    assert plan.output_dir == root / real_module.OUTPUT_DIRECTORY
+    assert not plan.source_array.exists()
+    with pytest.raises(PermissionError, match="disabled"):
+        real_module.run_real_export(root, auth_path)
+    assert not plan.output_dir.exists()
+
+
+def test_real_preparation_rejects_revision_dirty_tree_or_wrong_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, auth_path, record = synthetic_real_preparation(tmp_path, monkeypatch)
+    for change in (
+        {"approved_commit": "wrong-revision"},
+        {"output_directory": "data/processed/other"},
+        {"ordered_fit_identity_sha256": "0" * 64},
+        {"source_array_sha256": "0" * 64},
+        {"manifest_version": "final_fit_v2"},
+    ):
+        auth_path.write_text(json.dumps({**record, **change}), encoding="utf-8")
+        with pytest.raises(PermissionError, match="authorization"):
+            real_module.prepare_real_export(root, auth_path)
+    auth_path.write_text(json.dumps(record), encoding="utf-8")
+
+    def dirty_git(args: list[str], **_kwargs: object) -> str:
+        return "synthetic-reviewed-revision\n" if args[-1] == "HEAD" else " M file.py\n"
+
+    monkeypatch.setattr(real_module.subprocess, "check_output", dirty_git)
+    with pytest.raises(PermissionError, match="clean reviewed"):
+        real_module.prepare_real_export(root, auth_path)
+
+
+def test_real_preparation_rejects_wrong_frozen_membership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, auth_path, _ = synthetic_real_preparation(tmp_path, monkeypatch)
+    split_path = root / "data/processed/split_v1.json"
+    split = json.loads(split_path.read_text(encoding="utf-8"))
+    split["partitions"]["train"]["patient_sample_map"][0]["sample_id"] = "SYN-S-675"
+    split_path.write_text(json.dumps(split), encoding="utf-8")
+    monkeypatch.setattr(real_module, "SPLIT_SHA256", export_module.sha256_file(split_path))
+    with pytest.raises(ValueError, match="population or schema"):
+        real_module.prepare_real_export(root, auth_path)
+
+
+def test_real_mode_denies_direct_shared_writer_before_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, _ = fixture_plan(tmp_path)
+    monkeypatch.setattr(export_module, "_read_row", lambda *_: pytest.fail("expression row read"))
+    with pytest.raises(PermissionError, match="disabled"):
+        export_module._export_exact_ranges(plan, real=True)
+    assert not plan.output_dir.exists()
