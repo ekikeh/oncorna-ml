@@ -1,0 +1,17 @@
+# Phase 2D-F9 — checkout binding and fail-closed claim repair
+
+## Findings and corrections
+
+The F8 authorization record named only a revision and repository-relative output. It could be copied to another checkout at the same revision. The corrected record additionally names the canonical checkout and canonical absolute output path. The exporter verifies the Git top-level directory, clean revision, fixed authorization location, frozen configuration and split, schema and membership, and exact record both during preparation and immediately before claiming an attempt. The output parent may not be a symlink or junction redirect. `Path.resolve()` resolves checkout aliases; `os.path.normcase()` normalizes Windows case and separators. An equivalent spelling of the **same** checkout is accepted; a different canonical checkout or output is rejected. This is a local-path binding, not a global one-attempt guarantee. Copies to a different host with an identical path, or a filesystem later mounted at the same path, are outside its scope.
+
+The F8 marker used exclusive creation and file `fsync` but lacked demonstrated directory-entry durability and restrictive Windows ACLs. The corrected claim routine uses exclusive creation, mode `0600`, checked permissions, file `fsync`, and parent-directory `fsync` on platforms supporting those operations. It never deletes an uncertain or failed claim. On Windows, the real claim **fails closed before source values or output creation**: this code does not claim that `FlushFileBuffers` on a file proves directory-entry persistence, and it has no reviewed Windows ACL-at-creation mechanism. Therefore this revision cannot run a real export on the target Windows host. No Windows authorization record or claim was created. A future mechanism needs independent review and separate approval before execution; a human-controlled, durable attempt ledger with explicit reconciliation of uncertain attempts is one conservative option, but changes the authorization model.
+
+## Access and provenance
+
+The shared writer still requires a plan rederived from verified frozen metadata. It claims before source-value access or artifact output creation. After a successful claim it records source identity/size/timestamps before opening the one source descriptor, then checks that the descriptor matches. The existing header/layout, authorized-row, two-pass digest and source-stability checks remain in place. Changes before this first source fingerprint, after its final check, or storage behavior below the application remain residual risks. Full-source SHA-256 and exact source-value verification remain deferred until separately authorized test access. The manifest still marks historical source hashes as unverified at export.
+
+No final-test guard, scientific setting, frozen partition, Phase 2B/2C result, or manifest contract changed. Tests use synthetic identifiers and values. The symlink-redirection test is skipped where Windows denies the privilege to create a directory symlink; the production check still rejects resolved output-parent redirection.
+
+## Decision
+
+The corrected patch is suitable for **independent review before publication**. It is **NO-GO for a real fitting-only export on Windows** because the platform claim is deliberately blocked. Do not create a real authorization record, fit a model, or access test data. A future Windows claim/ACL mechanism or a separately approved auditable recovery procedure is required before one real attempt can be authorized.

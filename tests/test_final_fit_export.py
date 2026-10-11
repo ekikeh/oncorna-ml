@@ -389,9 +389,17 @@ def test_missing_or_mismatched_frozen_provenance_and_count(tmp_path: Path) -> No
         original(**{**arguments, "schema_path": tmp_path / "missing-schema.json"})
 
 
+def synthetic_claim(marker: Path, record: dict[str, str]) -> None:
+    """Test-only exclusive claim; never used by the real Windows entry point."""
+    with marker.open("x", encoding="utf-8") as handle:
+        json.dump(record, handle)
+
+
 def test_real_export_authorization_contract_remains_locked(tmp_path: Path) -> None:
     plan, _ = fixture_plan(tmp_path)
-    record = expected_authorization(plan, "reviewed-synthetic-revision")
+    plan = replace(plan, output_dir=tmp_path / real_module.OUTPUT_DIRECTORY)
+    plan.output_dir.parent.mkdir(parents=True)
+    record = expected_authorization(plan, "reviewed-synthetic-revision", tmp_path)
     verify_authorization_record(record, record)
     for altered in (
         {**record, "approved_commit": "different"},
@@ -413,6 +421,7 @@ def synthetic_real_preparation(
 ) -> tuple[Path, Path, dict[str, str]]:
     """Construct only synthetic metadata; the all-gene expression file stays absent."""
     root = tmp_path
+    root.mkdir(parents=True, exist_ok=True)
     (root / "configs").mkdir()
     (root / "data/processed/preprocessing_v1").mkdir(parents=True)
     samples = [f"SYN-S-{i}" for i in range(844)]
@@ -471,6 +480,8 @@ def synthetic_real_preparation(
     monkeypatch.setattr(final_test_module, "validate_protocol", lambda *_args: None)
 
     def git_read(args: list[str], **_kwargs: object) -> str:
+        if args[-1] == "--show-toplevel":
+            return str(root)
         return "synthetic-reviewed-revision\n" if args[-1] == "HEAD" else ""
 
     monkeypatch.setattr(real_module.subprocess, "check_output", git_read)
@@ -491,7 +502,7 @@ def synthetic_real_preparation(
         approved_cohort_identifier="TCGA-BRCA Xena primary-tumor cohort",
         command="one-attempt final_fit_v1 exact-range export",
     )
-    record = real_module.expected_authorization(plan, "synthetic-reviewed-revision")
+    record = real_module.expected_authorization(plan, "synthetic-reviewed-revision", root)
     auth_path.write_text(json.dumps(record), encoding="utf-8")
     return root, auth_path, record
 
@@ -526,6 +537,8 @@ def test_real_preparation_rejects_revision_dirty_tree_or_wrong_record(
     auth_path.write_text(json.dumps(record), encoding="utf-8")
 
     def dirty_git(args: list[str], **_kwargs: object) -> str:
+        if args[-1] == "--show-toplevel":
+            return str(root)
         return "synthetic-reviewed-revision\n" if args[-1] == "HEAD" else " M file.py\n"
 
     monkeypatch.setattr(real_module.subprocess, "check_output", dirty_git)
@@ -563,15 +576,24 @@ def test_activated_path_extracts_only_synthetic_fit_rows_and_consumes_attempt(
     plan = replace(plan, output_dir=tmp_path / real_module.OUTPUT_DIRECTORY)
     plan.output_dir.parent.mkdir(parents=True)
     authorization_path = tmp_path / real_module.AUTHORIZATION_PATH
+    monkeypatch.setattr(real_module, "_create_durable_claim", synthetic_claim)
     authorization_path.write_text(
-        json.dumps(real_module.expected_authorization(plan, "synthetic-reviewed-revision")),
+        json.dumps(
+            real_module.expected_authorization(plan, "synthetic-reviewed-revision", tmp_path)
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(real_module, "prepare_real_export", lambda *_args: plan)
     monkeypatch.setattr(
         real_module.subprocess,
         "check_output",
-        lambda args, **_kwargs: "synthetic-reviewed-revision\n" if args[-1] == "HEAD" else "",
+        lambda args, **_kwargs: (
+            str(tmp_path)
+            if args[-1] == "--show-toplevel"
+            else "synthetic-reviewed-revision\n"
+            if args[-1] == "HEAD"
+            else ""
+        ),
     )
     requested: list[int] = []
     original = export_module._read_row
@@ -608,15 +630,24 @@ def test_activated_path_keeps_failed_attempt_and_refuses_retry(
     plan = replace(plan, output_dir=tmp_path / real_module.OUTPUT_DIRECTORY)
     plan.output_dir.parent.mkdir(parents=True)
     authorization_path = tmp_path / real_module.AUTHORIZATION_PATH
+    monkeypatch.setattr(real_module, "_create_durable_claim", synthetic_claim)
     authorization_path.write_text(
-        json.dumps(real_module.expected_authorization(plan, "synthetic-reviewed-revision")),
+        json.dumps(
+            real_module.expected_authorization(plan, "synthetic-reviewed-revision", tmp_path)
+        ),
         encoding="utf-8",
     )
     monkeypatch.setattr(real_module, "prepare_real_export", lambda *_args: plan)
     monkeypatch.setattr(
         real_module.subprocess,
         "check_output",
-        lambda args, **_kwargs: "synthetic-reviewed-revision\n" if args[-1] == "HEAD" else "",
+        lambda args, **_kwargs: (
+            str(tmp_path)
+            if args[-1] == "--show-toplevel"
+            else "synthetic-reviewed-revision\n"
+            if args[-1] == "HEAD"
+            else ""
+        ),
     )
     original = export_module._read_row
     calls = 0
@@ -665,3 +696,163 @@ def test_real_export_rejects_missing_record_and_existing_output(
     output.mkdir(parents=True)
     with pytest.raises(FileExistsError, match="already exists"):
         real_module.prepare_real_export(root, authorization_path)
+
+
+def test_authorization_cannot_be_copied_to_another_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, _, record = synthetic_real_preparation(tmp_path / "first", monkeypatch)
+    second, second_auth, _ = synthetic_real_preparation(tmp_path / "second", monkeypatch)
+    assert record["canonical_checkout"] != real_module._canonical_checkout(second)
+    second_auth.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(PermissionError, match="authorization"):
+        real_module.prepare_real_export(second, second_auth)
+    assert real_module._canonical_checkout(first / ".") == record["canonical_checkout"]
+    assert real_module._canonical_output(first / ".") == record["canonical_output"]
+    if os.name == "nt":
+        assert (
+            real_module._canonical_checkout(Path(str(first).swapcase()))
+            == record["canonical_checkout"]
+        )
+        assert (
+            real_module._canonical_output(Path(str(first).swapcase())) == record["canonical_output"]
+        )
+
+
+def test_redirected_output_parent_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, authorization_path, _ = synthetic_real_preparation(tmp_path, monkeypatch)
+    original = root / "data/processed"
+    alternate = root / "data/alternate_processed"
+    original.rename(alternate)
+    try:
+        original.symlink_to(alternate, target_is_directory=True)
+    except OSError:
+        pytest.skip("Directory symlinks require a Windows privilege unavailable here")
+    with pytest.raises(PermissionError, match="redirected"):
+        real_module.prepare_real_export(root, authorization_path)
+
+
+def test_resolved_output_parent_mismatch_is_rejected_without_symlink_privilege(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, authorization_path, _ = synthetic_real_preparation(tmp_path, monkeypatch)
+    fixed_parent = root / real_module.OUTPUT_DIRECTORY.parent
+    original_resolve = Path.resolve
+
+    def redirected(path: Path, *args: object, **kwargs: object) -> Path:
+        if path == fixed_parent:
+            return root / "data/elsewhere"
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", redirected)
+    with pytest.raises(PermissionError, match="redirected"):
+        real_module.prepare_real_export(root, authorization_path)
+
+
+@pytest.mark.parametrize("failure", ["permission", "synchronization", "crash"])
+def test_uncertain_claim_stays_consumed_and_blocks_source_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    plan, _ = fixture_plan(tmp_path)
+    plan = replace(plan, output_dir=tmp_path / real_module.OUTPUT_DIRECTORY)
+    plan.output_dir.parent.mkdir(parents=True)
+    authorization_path = tmp_path / real_module.AUTHORIZATION_PATH
+    authorization_path.write_text(
+        json.dumps(
+            real_module.expected_authorization(plan, "synthetic-reviewed-revision", tmp_path)
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(real_module, "prepare_real_export", lambda *_args: plan)
+
+    def git_read(args: list[str], **_kwargs: object) -> str:
+        if args[-1] == "--show-toplevel":
+            return str(tmp_path)
+        return "synthetic-reviewed-revision\n" if args[-1] == "HEAD" else ""
+
+    monkeypatch.setattr(real_module.subprocess, "check_output", git_read)
+    monkeypatch.setattr(export_module, "_read_row", lambda *_: pytest.fail("source row accessed"))
+
+    def uncertain(marker: Path, record: dict[str, str]) -> None:
+        synthetic_claim(marker, record)
+        raise OSError(f"simulated {failure} failure after exclusive claim")
+
+    monkeypatch.setattr(real_module, "_create_durable_claim", uncertain)
+    with pytest.raises(OSError, match=failure):
+        real_module.run_real_export(tmp_path, authorization_path)
+    assert (tmp_path / real_module.ATTEMPT_MARKER_PATH).exists()
+    assert not plan.output_dir.exists()
+    with pytest.raises(FileExistsError):
+        real_module.run_real_export(tmp_path, authorization_path)
+
+
+def test_windows_real_claim_fails_closed_before_source_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows-specific conservative claim policy")
+    plan, _ = fixture_plan(tmp_path)
+    plan = replace(plan, output_dir=tmp_path / real_module.OUTPUT_DIRECTORY)
+    plan.output_dir.parent.mkdir(parents=True)
+    authorization_path = tmp_path / real_module.AUTHORIZATION_PATH
+    authorization_path.write_text(
+        json.dumps(
+            real_module.expected_authorization(plan, "synthetic-reviewed-revision", tmp_path)
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(real_module, "prepare_real_export", lambda *_args: plan)
+
+    def git_read(args: list[str], **_kwargs: object) -> str:
+        if args[-1] == "--show-toplevel":
+            return str(tmp_path)
+        return "synthetic-reviewed-revision\n" if args[-1] == "HEAD" else ""
+
+    monkeypatch.setattr(real_module.subprocess, "check_output", git_read)
+    monkeypatch.setattr(export_module, "_read_row", lambda *_: pytest.fail("source row accessed"))
+    with pytest.raises(real_module.ClaimDurabilityError, match="Windows marker"):
+        real_module.run_real_export(tmp_path, authorization_path)
+    assert not plan.output_dir.exists()
+
+
+def test_direct_real_writer_rejects_a_caller_supplied_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, _ = fixture_plan(tmp_path)
+    plan = replace(plan, output_dir=tmp_path / real_module.OUTPUT_DIRECTORY)
+    plan.output_dir.parent.mkdir(parents=True)
+    authorization_path = tmp_path / real_module.AUTHORIZATION_PATH
+    authorization_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(real_module, "prepare_real_export", lambda *_args: plan)
+    monkeypatch.setattr(export_module, "_read_row", lambda *_: pytest.fail("source row accessed"))
+    altered = replace(plan, fit_pairs=tuple(reversed(plan.fit_pairs)))
+    with pytest.raises(PermissionError, match="differs from verified"):
+        export_module._export_exact_ranges(
+            altered, real=True, root=tmp_path, authorization_path=authorization_path
+        )
+    assert not (tmp_path / real_module.ATTEMPT_MARKER_PATH).exists()
+
+
+def test_claim_rejects_modified_record_and_wrong_checkout_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root, authorization_path, record = synthetic_real_preparation(tmp_path, monkeypatch)
+    plan = real_module.prepare_real_export(root, authorization_path)
+    authorization_path.write_text(
+        json.dumps({**record, "canonical_output": "C:/wrong/output"}), encoding="utf-8"
+    )
+    with pytest.raises(PermissionError, match="authorization"):
+        real_module.claim_real_export_attempt(root, authorization_path, plan)
+    authorization_path.write_text(json.dumps(record), encoding="utf-8")
+
+    def wrong_checkout(args: list[str], **_kwargs: object) -> str:
+        if args[-1] == "--show-toplevel":
+            return str(root.parent)
+        return "synthetic-reviewed-revision\n" if args[-1] == "HEAD" else ""
+
+    monkeypatch.setattr(real_module.subprocess, "check_output", wrong_checkout)
+    with pytest.raises(PermissionError, match="checkout root"):
+        real_module.claim_real_export_attempt(root, authorization_path, plan)
+    assert not (root / real_module.ATTEMPT_MARKER_PATH).exists()

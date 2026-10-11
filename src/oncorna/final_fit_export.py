@@ -477,6 +477,7 @@ def _export_exact_ranges(
     """Shared row writer with a fixed authorization and one-attempt real boundary."""
     if type(real) is not bool:
         raise PermissionError("Invalid fitting-only export mode")
+    pre_open_fingerprint = None
     if real:
         if root is None or authorization_path is None:
             raise PermissionError("Real export requires the fixed authorization record")
@@ -486,6 +487,7 @@ def _export_exact_ranges(
         if plan != verified_plan:
             raise PermissionError("Real export plan differs from verified frozen metadata")
         claim_real_export_attempt(root, authorization_path, plan)
+        pre_open_fingerprint = _path_fingerprint(plan.source_array)
     else:
         all_ids = [value for pair in plan.fit_pairs + plan.test_pairs for value in pair]
         project_data = Path(__file__).resolve().parents[2] / "data"
@@ -503,6 +505,8 @@ def _export_exact_ranges(
         indices = authorized_row_indices(plan)
         with plan.source_array.open("rb", buffering=0) as source:
             baseline = _fingerprint(os.fstat(source.fileno()))
+            if pre_open_fingerprint is not None and baseline != pre_open_fingerprint:
+                raise ValueError("Source array changed between claim and descriptor opening")
             _assert_source_stable(source, plan.source_array, baseline)
             header = inspect_npy_header_handle(source, (len(plan.sample_ids), len(plan.gene_ids)))
             _assert_source_stable(source, plan.source_array, baseline)
