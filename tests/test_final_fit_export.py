@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import uuid
 from dataclasses import replace
 from pathlib import Path
 
@@ -15,6 +16,7 @@ import yaml
 import oncorna.final_fit_export as export_module
 import oncorna.final_fit_real as real_module
 import oncorna.final_test as final_test_module
+import oncorna.windows_attempt_claim as claim_module
 from oncorna.final_fit_export import (
     ExportPlan,
     authorized_row_indices,
@@ -276,6 +278,28 @@ def test_interruption_before_success_does_not_seal(
         export_synthetic(plan)
 
 
+def test_interruption_after_sealing_is_not_reported_as_completed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, _ = fixture_plan(tmp_path)
+    monkeypatch.setattr(
+        export_module,
+        "verify_completed_export",
+        lambda *_args: (_ for _ in ()).throw(KeyboardInterrupt("after sealing")),
+    )
+    with pytest.raises(KeyboardInterrupt, match="after sealing"):
+        export_synthetic(plan)
+    assert (plan.output_dir / "manifest.json").exists()
+    assert (plan.output_dir / "success.json").exists()
+    assert (plan.output_dir / "failure.json").exists()
+    assert (
+        '"state": "failed"'
+        in (plan.output_dir / "export_state.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    )
+    with pytest.raises(FileExistsError):
+        export_synthetic(plan)
+
+
 def test_real_id_plan_is_blocked_before_directory_creation(tmp_path: Path) -> None:
     plan, _ = fixture_plan(tmp_path)
     altered = replace(
@@ -395,14 +419,29 @@ def synthetic_claim(marker: Path, record: dict[str, str]) -> None:
         json.dump(record, handle)
 
 
+SYNTHETIC_ATTEMPT_ID = "61230c8b-bf74-4787-86a0-b8bf09ebc100"
+
+
+def synthetic_authorization(plan: ExportPlan, revision: str, root: Path) -> dict[str, str]:
+    return expected_authorization(
+        plan,
+        revision,
+        root,
+        attempt_id=SYNTHETIC_ATTEMPT_ID,
+        approval_reference="SYNTHETIC-APPROVAL",
+    )
+
+
 def test_real_export_authorization_contract_remains_locked(tmp_path: Path) -> None:
     plan, _ = fixture_plan(tmp_path)
     plan = replace(plan, output_dir=tmp_path / real_module.OUTPUT_DIRECTORY)
     plan.output_dir.parent.mkdir(parents=True)
-    record = expected_authorization(plan, "reviewed-synthetic-revision", tmp_path)
+    record = synthetic_authorization(plan, "reviewed-synthetic-revision", tmp_path)
     verify_authorization_record(record, record)
     for altered in (
         {**record, "approved_commit": "different"},
+        {**record, "attempt_id": str(uuid.uuid4())},
+        {**record, "approval_reference": ""},
         {**record, "manifest_version": "final_fit_v2"},
         {**record, "output_directory": "other"},
         {**record, "split_sha256": "0" * 64},
@@ -411,6 +450,14 @@ def test_real_export_authorization_contract_remains_locked(tmp_path: Path) -> No
     ):
         with pytest.raises(PermissionError):
             verify_authorization_record(altered, record)
+    with pytest.raises(PermissionError, match="UUIDv4"):
+        expected_authorization(
+            plan,
+            "reviewed-synthetic-revision",
+            tmp_path,
+            attempt_id="not-a-uuid",
+            approval_reference="SYNTHETIC-APPROVAL",
+        )
     with pytest.raises(PermissionError, match="fixed local authorization path"):
         run_real_export(tmp_path, tmp_path / "authorization.json")
     assert not (tmp_path / "data/processed/final_fit_v1").exists()
@@ -502,7 +549,7 @@ def synthetic_real_preparation(
         approved_cohort_identifier="TCGA-BRCA Xena primary-tumor cohort",
         command="one-attempt final_fit_v1 exact-range export",
     )
-    record = real_module.expected_authorization(plan, "synthetic-reviewed-revision", root)
+    record = synthetic_authorization(plan, "synthetic-reviewed-revision", root)
     auth_path.write_text(json.dumps(record), encoding="utf-8")
     return root, auth_path, record
 
@@ -526,13 +573,16 @@ def test_real_preparation_rejects_revision_dirty_tree_or_wrong_record(
     root, auth_path, record = synthetic_real_preparation(tmp_path, monkeypatch)
     for change in (
         {"approved_commit": "wrong-revision"},
+        {"authorization_schema": "final_fit_single_export_v1"},
+        {"attempt_id": "not-a-uuid"},
+        {"approval_reference": ""},
         {"output_directory": "data/processed/other"},
         {"ordered_fit_identity_sha256": "0" * 64},
         {"source_array_sha256": "0" * 64},
         {"manifest_version": "final_fit_v2"},
     ):
         auth_path.write_text(json.dumps({**record, **change}), encoding="utf-8")
-        with pytest.raises(PermissionError, match="authorization"):
+        with pytest.raises(PermissionError):
             real_module.prepare_real_export(root, auth_path)
     auth_path.write_text(json.dumps(record), encoding="utf-8")
 
@@ -576,24 +626,13 @@ def test_activated_path_extracts_only_synthetic_fit_rows_and_consumes_attempt(
     plan = replace(plan, output_dir=tmp_path / real_module.OUTPUT_DIRECTORY)
     plan.output_dir.parent.mkdir(parents=True)
     authorization_path = tmp_path / real_module.AUTHORIZATION_PATH
-    monkeypatch.setattr(real_module, "_create_durable_claim", synthetic_claim)
     authorization_path.write_text(
-        json.dumps(
-            real_module.expected_authorization(plan, "synthetic-reviewed-revision", tmp_path)
-        ),
+        json.dumps(synthetic_authorization(plan, "synthetic-reviewed-revision", tmp_path)),
         encoding="utf-8",
     )
     monkeypatch.setattr(real_module, "prepare_real_export", lambda *_args: plan)
     monkeypatch.setattr(
-        real_module.subprocess,
-        "check_output",
-        lambda args, **_kwargs: (
-            str(tmp_path)
-            if args[-1] == "--show-toplevel"
-            else "synthetic-reviewed-revision\n"
-            if args[-1] == "HEAD"
-            else ""
-        ),
+        real_module, "_checked_revision", lambda _root: "synthetic-reviewed-revision"
     )
     requested: list[int] = []
     original = export_module._read_row
@@ -612,7 +651,13 @@ def test_activated_path_extracts_only_synthetic_fit_rows_and_consumes_attempt(
     )
     assert manifest["source_hash_verified_at_export"] is False
     assert (plan.output_dir / "success.json").exists()
-    assert (tmp_path / real_module.ATTEMPT_MARKER_PATH).exists()
+    claim = json.loads((tmp_path / real_module.ATTEMPT_MARKER_PATH).read_text(encoding="utf-8"))
+    assert claim["policy"] == "final_fit_local_audit_v1"
+    assert claim["attempt_id"] == SYNTHETIC_ATTEMPT_ID
+    assert claim["authorization_sha256"] == export_module.sha256_file(authorization_path)
+    assert claim["canonical_output"] == real_module._canonical_output(tmp_path)
+    assert claim["config_sha256"] == real_module.CONFIG_SHA256
+    assert claim["split_sha256"] == real_module.SPLIT_SHA256
     assert (
         verify_completed_export(
             plan.output_dir, plan, inspect_npy_header(plan.source_array, (8, 4))
@@ -630,24 +675,13 @@ def test_activated_path_keeps_failed_attempt_and_refuses_retry(
     plan = replace(plan, output_dir=tmp_path / real_module.OUTPUT_DIRECTORY)
     plan.output_dir.parent.mkdir(parents=True)
     authorization_path = tmp_path / real_module.AUTHORIZATION_PATH
-    monkeypatch.setattr(real_module, "_create_durable_claim", synthetic_claim)
     authorization_path.write_text(
-        json.dumps(
-            real_module.expected_authorization(plan, "synthetic-reviewed-revision", tmp_path)
-        ),
+        json.dumps(synthetic_authorization(plan, "synthetic-reviewed-revision", tmp_path)),
         encoding="utf-8",
     )
     monkeypatch.setattr(real_module, "prepare_real_export", lambda *_args: plan)
     monkeypatch.setattr(
-        real_module.subprocess,
-        "check_output",
-        lambda args, **_kwargs: (
-            str(tmp_path)
-            if args[-1] == "--show-toplevel"
-            else "synthetic-reviewed-revision\n"
-            if args[-1] == "HEAD"
-            else ""
-        ),
+        real_module, "_checked_revision", lambda _root: "synthetic-reviewed-revision"
     )
     original = export_module._read_row
     calls = 0
@@ -760,9 +794,7 @@ def test_uncertain_claim_stays_consumed_and_blocks_source_access(
     plan.output_dir.parent.mkdir(parents=True)
     authorization_path = tmp_path / real_module.AUTHORIZATION_PATH
     authorization_path.write_text(
-        json.dumps(
-            real_module.expected_authorization(plan, "synthetic-reviewed-revision", tmp_path)
-        ),
+        json.dumps(synthetic_authorization(plan, "synthetic-reviewed-revision", tmp_path)),
         encoding="utf-8",
     )
     monkeypatch.setattr(real_module, "prepare_real_export", lambda *_args: plan)
@@ -779,7 +811,7 @@ def test_uncertain_claim_stays_consumed_and_blocks_source_access(
         synthetic_claim(marker, record)
         raise OSError(f"simulated {failure} failure after exclusive claim")
 
-    monkeypatch.setattr(real_module, "_create_durable_claim", uncertain)
+    monkeypatch.setattr(real_module, "_create_local_claim", uncertain)
     with pytest.raises(OSError, match=failure):
         real_module.run_real_export(tmp_path, authorization_path)
     assert (tmp_path / real_module.ATTEMPT_MARKER_PATH).exists()
@@ -788,19 +820,44 @@ def test_uncertain_claim_stays_consumed_and_blocks_source_access(
         real_module.run_real_export(tmp_path, authorization_path)
 
 
-def test_windows_real_claim_fails_closed_before_source_access(
+def test_failure_before_local_claim_stops_before_source_access(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    if os.name != "nt":
-        pytest.skip("Windows-specific conservative claim policy")
     plan, _ = fixture_plan(tmp_path)
     plan = replace(plan, output_dir=tmp_path / real_module.OUTPUT_DIRECTORY)
     plan.output_dir.parent.mkdir(parents=True)
     authorization_path = tmp_path / real_module.AUTHORIZATION_PATH
     authorization_path.write_text(
-        json.dumps(
-            real_module.expected_authorization(plan, "synthetic-reviewed-revision", tmp_path)
-        ),
+        json.dumps(synthetic_authorization(plan, "synthetic-reviewed-revision", tmp_path)),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(real_module, "prepare_real_export", lambda *_args: plan)
+    monkeypatch.setattr(
+        real_module, "_checked_revision", lambda _root: "synthetic-reviewed-revision"
+    )
+    monkeypatch.setattr(
+        real_module,
+        "_create_local_claim",
+        lambda *_: (_ for _ in ()).throw(KeyboardInterrupt("before claim")),
+    )
+    monkeypatch.setattr(export_module, "_read_row", lambda *_: pytest.fail("source row accessed"))
+    with pytest.raises(KeyboardInterrupt, match="before claim"):
+        real_module.run_real_export(tmp_path, authorization_path)
+    assert not (tmp_path / real_module.ATTEMPT_MARKER_PATH).exists()
+    assert not plan.output_dir.exists()
+
+
+def test_windows_acl_failure_blocks_source_access(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows-specific ACL creation path")
+    plan, _ = fixture_plan(tmp_path)
+    plan = replace(plan, output_dir=tmp_path / real_module.OUTPUT_DIRECTORY)
+    plan.output_dir.parent.mkdir(parents=True)
+    authorization_path = tmp_path / real_module.AUTHORIZATION_PATH
+    authorization_path.write_text(
+        json.dumps(synthetic_authorization(plan, "synthetic-reviewed-revision", tmp_path)),
         encoding="utf-8",
     )
     monkeypatch.setattr(real_module, "prepare_real_export", lambda *_args: plan)
@@ -812,7 +869,12 @@ def test_windows_real_claim_fails_closed_before_source_access(
 
     monkeypatch.setattr(real_module.subprocess, "check_output", git_read)
     monkeypatch.setattr(export_module, "_read_row", lambda *_: pytest.fail("source row accessed"))
-    with pytest.raises(real_module.ClaimDurabilityError, match="Windows marker"):
+    monkeypatch.setattr(
+        claim_module,
+        "create_and_verify_claim",
+        lambda *_: (_ for _ in ()).throw(PermissionError("synthetic ACL failure")),
+    )
+    with pytest.raises(PermissionError, match="ACL failure"):
         real_module.run_real_export(tmp_path, authorization_path)
     assert not plan.output_dir.exists()
 
