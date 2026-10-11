@@ -429,21 +429,26 @@ def verify_manifest_contract(
         raise ValueError("Final-fit extraction repeat digest is missing or inconsistent")
 
 
-def verify_completed_export(output: Path, plan: ExportPlan, header: ArrayHeader) -> dict[str, Any]:
+def _verify_export_seal(
+    output: Path, plan: ExportPlan, header: ArrayHeader, *, completed: bool
+) -> tuple[dict[str, Any], str, str, list[dict[str, Any]]]:
     entries = [
         json.loads(line)
         for line in (output / "export_state.jsonl").read_text(encoding="utf-8").splitlines()
     ]
-    if not entries or entries[-1]["state"] != "completed":
-        raise ValueError("Fitting-only export has no terminal completed state")
+    expected_states = ["reserved", "extracting", "source_stable"]
+    if completed:
+        expected_states.append("completed")
+    if (
+        [entry.get("state") for entry in entries] != expected_states
+        or (output / "failure.json").exists()
+        or any(output.glob(".*.pending"))
+    ):
+        raise ValueError("Fitting-only export has failed or contradictory state evidence")
     manifest_path = output / "manifest.json"
     success_path = output / "success.json"
     manifest_sha = sha256_file(manifest_path)
-    if manifest_sha != entries[-1]["manifest_sha256"]:
-        raise ValueError("Fitting-only manifest checksum differs from completed state")
     success_sha = sha256_file(success_path)
-    if success_sha != entries[-1]["success_sha256"]:
-        raise ValueError("Fitting-only success marker differs from completed state")
     if json.loads(success_path.read_text(encoding="utf-8")) != {
         "status": "sealed",
         "manifest_sha256": manifest_sha,
@@ -464,6 +469,17 @@ def verify_completed_export(output: Path, plan: ExportPlan, header: ArrayHeader)
             payload_digest.update(_read_exact(handle, output_header.row_bytes))
     if payload_digest.hexdigest() != manifest["selected_payload_sha256"]:
         raise ValueError("Fitting-only artifact payload differs from selected source rows")
+    return manifest, manifest_sha, success_sha, entries
+
+
+def verify_completed_export(output: Path, plan: ExportPlan, header: ArrayHeader) -> dict[str, Any]:
+    manifest, manifest_sha, success_sha, entries = _verify_export_seal(
+        output, plan, header, completed=True
+    )
+    if entries[-1].get("manifest_sha256") != manifest_sha:
+        raise ValueError("Fitting-only manifest checksum differs from completed state")
+    if entries[-1].get("success_sha256") != success_sha:
+        raise ValueError("Fitting-only success marker differs from completed state")
     return manifest
 
 
@@ -551,8 +567,12 @@ def _export_exact_ranges(
         manifest_sha = sha256_file(output / "manifest.json")
         _atomic_json(output / "success.json", {"status": "sealed", "manifest_sha256": manifest_sha})
         success_sha = sha256_file(output / "success.json")
+        _, verified_manifest_sha, verified_success_sha, _ = _verify_export_seal(
+            output, plan, header, completed=False
+        )
+        if (verified_manifest_sha, verified_success_sha) != (manifest_sha, success_sha):
+            raise ValueError("Fitting-only seal changed before completion")
         _append_state(output, "completed", manifest_sha256=manifest_sha, success_sha256=success_sha)
-        verify_completed_export(output, plan, header)
         return manifest
     except BaseException as exc:
         try:

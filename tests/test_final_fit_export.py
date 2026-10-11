@@ -282,12 +282,19 @@ def test_interruption_after_sealing_is_not_reported_as_completed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plan, _ = fixture_plan(tmp_path)
+    original = export_module._verify_export_seal
+
+    def interrupt(*args: object, **kwargs: object) -> object:
+        if kwargs.get("completed") is False:
+            raise KeyboardInterrupt("before completion")
+        return original(*args, **kwargs)
+
     monkeypatch.setattr(
         export_module,
-        "verify_completed_export",
-        lambda *_args: (_ for _ in ()).throw(KeyboardInterrupt("after sealing")),
+        "_verify_export_seal",
+        interrupt,
     )
-    with pytest.raises(KeyboardInterrupt, match="after sealing"):
+    with pytest.raises(KeyboardInterrupt, match="before completion"):
         export_synthetic(plan)
     assert (plan.output_dir / "manifest.json").exists()
     assert (plan.output_dir / "success.json").exists()
@@ -298,6 +305,58 @@ def test_interruption_after_sealing_is_not_reported_as_completed(
     )
     with pytest.raises(FileExistsError):
         export_synthetic(plan)
+
+
+def test_completed_append_failure_with_failed_append_failure_is_not_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan, _ = fixture_plan(tmp_path)
+    original = export_module._append_state
+
+    def fail_after_append(output: Path, state: str, **details: object) -> None:
+        if state == "failed":
+            raise OSError("synthetic failed-state write error")
+        original(output, state, **details)
+        if state == "completed":
+            raise OSError("synthetic crash after completed append")
+
+    monkeypatch.setattr(export_module, "_append_state", fail_after_append)
+    with pytest.raises(OSError, match="after completed"):
+        export_synthetic(plan)
+    header = inspect_npy_header(plan.source_array, (8, 4))
+    assert (plan.output_dir / "failure.json").exists()
+    assert (
+        '"state": "completed"'
+        in (plan.output_dir / "export_state.jsonl").read_text(encoding="utf-8").splitlines()[-1]
+    )
+    with pytest.raises(ValueError, match="failed or contradictory"):
+        verify_completed_export(plan.output_dir, plan, header)
+    with pytest.raises(FileExistsError):
+        export_synthetic(plan)
+
+
+def test_completed_verifier_rejects_contradictory_history_and_tampered_seals(
+    tmp_path: Path,
+) -> None:
+    plan, _ = fixture_plan(tmp_path)
+    export_synthetic(plan)
+    header = inspect_npy_header(plan.source_array, (8, 4))
+    state = plan.output_dir / "export_state.jsonl"
+    original_state = state.read_bytes()
+    state.write_bytes(original_state + b'{"state":"failed"}\n')
+    with pytest.raises(ValueError, match="failed or contradictory"):
+        verify_completed_export(plan.output_dir, plan, header)
+    state.write_bytes(original_state)
+    manifest = plan.output_dir / "manifest.json"
+    original_manifest = manifest.read_bytes()
+    manifest.write_bytes(original_manifest + b" ")
+    with pytest.raises(ValueError):
+        verify_completed_export(plan.output_dir, plan, header)
+    manifest.write_bytes(original_manifest)
+    success = plan.output_dir / "success.json"
+    success.write_bytes(success.read_bytes() + b" ")
+    with pytest.raises(ValueError):
+        verify_completed_export(plan.output_dir, plan, header)
 
 
 def test_real_id_plan_is_blocked_before_directory_creation(tmp_path: Path) -> None:

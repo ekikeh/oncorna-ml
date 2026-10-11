@@ -20,6 +20,65 @@ class SecurityAttributes(ctypes.Structure):
     ]
 
 
+class FileIdInfo(ctypes.Structure):
+    _fields_ = [
+        ("VolumeSerialNumber", ctypes.c_ulonglong),
+        ("FileId", ctypes.c_ubyte * 16),
+    ]
+
+
+def _file_identity(kernel: ctypes.WinDLL, handle: int) -> tuple[int, bytes]:
+    """Query the volume and 128-bit file ID from this open Windows handle."""
+    query = kernel.GetFileInformationByHandleEx
+    query.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+    query.restype = wintypes.BOOL
+    info = FileIdInfo()
+    if not query(handle, 0x12, ctypes.byref(info), ctypes.sizeof(info)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    file_id = bytes(info.FileId)
+    if not any(file_id):
+        raise ValueError("Windows filesystem did not provide a usable file ID")
+    return info.VolumeSerialNumber, file_id
+
+
+def _close_handle(kernel: ctypes.WinDLL, handle: int) -> None:
+    close = kernel.CloseHandle
+    close.argtypes = [wintypes.HANDLE]
+    close.restype = wintypes.BOOL
+    if not close(handle):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _free_descriptor(kernel: ctypes.WinDLL, descriptor: ctypes.c_void_p) -> None:
+    free = kernel.LocalFree
+    free.argtypes = [ctypes.c_void_p]
+    free.restype = ctypes.c_void_p
+    if free(descriptor):
+        raise ctypes.WinError(ctypes.get_last_error())
+
+
+def _path_identity(kernel: ctypes.WinDLL, path: Path) -> tuple[int, bytes]:
+    """Open the fixed path afresh, without following a final reparse point."""
+    open_file = kernel.CreateFileW
+    open_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    open_file.restype = wintypes.HANDLE
+    handle = open_file(str(path), 0x80, 0, None, 3, 0x00200080, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return _file_identity(kernel, handle)
+    finally:
+        _close_handle(kernel, handle)
+
+
 def _user_sid() -> str:
     result = subprocess.check_output(["whoami", "/user", "/fo", "csv", "/nh"], text=True)
     rows = list(csv.reader(io.StringIO(result)))
@@ -46,8 +105,7 @@ def _dacl_string(security_descriptor: ctypes.c_void_p) -> str:
     try:
         return ctypes.wstring_at(output)
     finally:
-        kernel.LocalFree.argtypes = [ctypes.c_void_p]
-        kernel.LocalFree(output)
+        _free_descriptor(kernel, output)
 
 
 def create_and_verify_claim(path: Path, payload: bytes) -> None:
@@ -69,7 +127,7 @@ def create_and_verify_claim(path: Path, payload: bytes) -> None:
     if not convert(sddl, 1, ctypes.byref(expected_sd), None):
         raise ctypes.WinError(ctypes.get_last_error())
     handle = None
-    held_identity: tuple[int, int] | None = None
+    held_identity: tuple[int, bytes] | None = None
     try:
         expected_dacl = _dacl_string(expected_sd)
         attributes = SecurityAttributes(ctypes.sizeof(SecurityAttributes), expected_sd, False)
@@ -152,16 +210,13 @@ def create_and_verify_claim(path: Path, payload: bytes) -> None:
             if _dacl_string(actual_sd) != expected_dacl:
                 raise PermissionError("Windows attempt-claim ACL differs from the approved policy")
         finally:
-            kernel.LocalFree(actual_sd)
-        held = path.stat()
-        if not held.st_ino:
-            raise ValueError("Windows attempt-claim file identity is unavailable")
-        held_identity = (held.st_dev, held.st_ino)
+            _free_descriptor(kernel, actual_sd)
+        held_identity = _file_identity(kernel, handle)
     finally:
-        if handle is not None and handle != ctypes.c_void_p(-1).value:
-            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-            kernel.CloseHandle(handle)
-        kernel.LocalFree(expected_sd)
-    observed_identity = path.stat()
-    if held_identity != (observed_identity.st_dev, observed_identity.st_ino):
+        try:
+            if handle is not None and handle != ctypes.c_void_p(-1).value:
+                _close_handle(kernel, handle)
+        finally:
+            _free_descriptor(kernel, expected_sd)
+    if held_identity != _path_identity(kernel, path):
         raise ValueError("Windows attempt-claim path identity changed")
