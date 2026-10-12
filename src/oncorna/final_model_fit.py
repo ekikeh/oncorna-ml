@@ -9,7 +9,6 @@ import math
 import os
 import platform
 import re
-import subprocess
 import uuid
 import warnings
 from collections import Counter
@@ -200,42 +199,11 @@ def verify_authorization_record(record: object, expected: dict[str, Any]) -> Non
         raise AuthorizationError("Fitting authorization is missing or mismatched")
 
 
-def verify_real_fit_authorization(
-    root: Path, authorization_path: Path, expected: dict[str, Any]
-) -> str:
-    """Read-only proposed gate; real fitting stays disabled even when this passes."""
-    root = root.resolve(strict=True)
-    fixed = root / AUTHORIZATION_PATH
-    output = root / OUTPUT_DIRECTORY
-    marker = root / ATTEMPT_PATH
-    if (
-        authorization_path.resolve(strict=True) != fixed
-        or fixed.parent.resolve(strict=True) != fixed.parent
-        or fixed.resolve(strict=True) != fixed
-        or output.parent.resolve(strict=True) != output.parent
-    ):
-        raise AuthorizationError("Fitting authorization or output path is redirected")
-    if output.exists() or marker.exists():
-        raise FileExistsError("A final-model fitting attempt already exists")
-    top = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], cwd=root, text=True)
-    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
-    dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=root, text=True)
-    if _canonical(Path(top.strip())) != _canonical(root) or dirty.strip():
-        raise AuthorizationError("Fitting requires the exact clean reviewed checkout")
-    if (
-        expected.get("approved_commit") != revision
-        or expected.get("config_sha256") != CONFIG_SHA256
-        or expected.get("split_sha256") != SPLIT_SHA256
-        or expected.get("fit_expression_sha256") != FIT_EXPRESSION_SHA256
-        or sha256_file(root / "configs/final_test_v1.yaml") != CONFIG_SHA256
-        or sha256_file(root / "data/processed/split_v1.json") != SPLIT_SHA256
-        or sha256_file(root / "data/processed/final_fit_v1/fit_expression.npy")
-        != FIT_EXPRESSION_SHA256
-    ):
-        raise AuthorizationError("Reviewed revision or frozen fitting hashes differ")
-    raw = fixed.read_bytes()
-    verify_authorization_record(json.loads(raw), expected)
-    return hashlib.sha256(raw).hexdigest()
+def verify_real_fit_authorization(root: Path, authorization_path: Path) -> str:
+    """Verify a record against independently derived fitting metadata; never execute."""
+    from oncorna.final_model_fit_real import verify_real_fit_preparation
+
+    return verify_real_fit_preparation(root, authorization_path).authorization_sha256
 
 
 def run_real_fit(*_args: object, **_kwargs: object) -> None:

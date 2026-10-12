@@ -220,11 +220,13 @@ def test_authorization_contract_rejects_revision_type_path_and_dirty_checkout(
             return "a" * 40 + "\n"
         return "dirty\n"
 
-    monkeypatch.setattr(fit_module.subprocess, "check_output", fake_git)
+    import oncorna.final_model_fit_real as real_module
+
+    monkeypatch.setattr(real_module.subprocess, "check_output", fake_git)
     auth_path = tmp_path / fit_module.AUTHORIZATION_PATH
     auth_path.write_text(json.dumps(record))
     with pytest.raises(AuthorizationError):
-        fit_module.verify_real_fit_authorization(tmp_path, auth_path, record)
+        fit_module.verify_real_fit_authorization(tmp_path, auth_path)
 
 
 def test_prior_output_or_claim_blocks_authorization(tmp_path: Path) -> None:
@@ -234,11 +236,11 @@ def test_prior_output_or_claim_blocks_authorization(tmp_path: Path) -> None:
     output = tmp_path / fit_module.OUTPUT_DIRECTORY
     output.mkdir()
     with pytest.raises(FileExistsError):
-        fit_module.verify_real_fit_authorization(tmp_path, auth, {})
+        fit_module.verify_real_fit_authorization(tmp_path, auth)
     output.rmdir()
     (tmp_path / fit_module.ATTEMPT_PATH).write_text("{}")
     with pytest.raises(FileExistsError):
-        fit_module.verify_real_fit_authorization(tmp_path, auth, {})
+        fit_module.verify_real_fit_authorization(tmp_path, auth)
 
 
 def test_real_fit_and_final_test_remain_locked(tmp_path: Path) -> None:
