@@ -68,6 +68,7 @@ MANIFEST_FIELDS = frozenset(
         "retained_gene_sha256",
         "attempt_id",
         "authorization_reference",
+        "authorization_sha256",
         "full_source_hash_verified",
         "source_row_equality_verified",
         "software",
@@ -307,6 +308,9 @@ def run_synthetic_fit(
         source_revision=source_revision,
         attempt_id=attempt_id,
         authorization_reference=authorization_reference,
+        execution_scope="synthetic",
+        authorization_sha256=None,
+        claimed_root=None,
         checkpoint=lambda _stage: None,
         validate_manifest=lambda _manifest: None,
     )
@@ -324,11 +328,60 @@ def _fit_and_seal(
     source_revision: str,
     attempt_id: str,
     authorization_reference: str,
+    execution_scope: str,
+    authorization_sha256: str | None,
+    claimed_root: Path | None,
     checkpoint: Callable[[str], None],
     validate_manifest: Callable[[dict[str, Any]], None],
 ) -> dict[str, Any]:
-    """One frozen fitting and sealing implementation for synthetic and future real use."""
-    checkpoint("before_output")
+    """Fit synthetic inputs or an independently checked synthetic claimed fixture."""
+    if execution_scope == "synthetic":
+        project_data = Path(__file__).resolve().parents[2] / "data"
+        if (
+            claimed_root is not None
+            or authorization_sha256 is not None
+            or output.resolve().is_relative_to(project_data.resolve())
+            or inputs.expression_path.resolve().is_relative_to(project_data.resolve())
+            or output.name == OUTPUT_DIRECTORY.name
+            or not source_revision.startswith("synthetic-")
+            or not attempt_id.startswith("synthetic-")
+            or not authorization_reference.startswith("synthetic-")
+        ):
+            raise AuthorizationError("Synthetic fitting cannot claim production output or approval")
+        _validate_inputs(inputs, config, artifact_sha256)
+    elif execution_scope == "claimed_synthetic":
+        if claimed_root is None or not _sha(authorization_sha256):
+            raise AuthorizationError("A verified synthetic claim is required")
+    else:
+        raise AuthorizationError("Real fitting remains disabled pending separate approval")
+
+    def checked(stage: str) -> None:
+        if execution_scope == "claimed_synthetic":
+            from oncorna.final_model_fit_real import verify_claimed_synthetic_context
+
+            verify_claimed_synthetic_context(
+                claimed_root,
+                output,
+                inputs,
+                authorization_sha256,
+                attempt_id,
+                authorization_reference,
+                source_revision,
+                config_sha256,
+                split_sha256,
+                artifact_sha256,
+            )
+            approved = np.load(inputs.expression_path, allow_pickle=False)
+            if (
+                values.dtype != np.dtype("<f8")
+                or not values.flags.c_contiguous
+                or values.shape != approved.shape
+                or not np.array_equal(values, approved)
+            ):
+                raise AuthorizationError("Fitting values differ from claimed expression artifact")
+        checkpoint(stage)
+
+    checked("before_output")
     if output.exists():
         raise FileExistsError("Fitting attempt already exists")
     output.mkdir(parents=True, exist_ok=False)
@@ -337,7 +390,7 @@ def _fit_and_seal(
         _state(output, "reserved")
         _state(output, "fitting")
         stage = "fitting"
-        checkpoint("before_fit")
+        checked("before_fit")
         frame = pd.DataFrame(
             np.asarray(values),
             index=tuple(sample for _, sample in inputs.fit_pairs),
@@ -347,7 +400,7 @@ def _fit_and_seal(
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             pipeline.fit(frame, np.asarray(inputs.true_labels, dtype=object))
-        checkpoint("after_fit")
+        checked("after_fit")
         if any(issubclass(item.category, ConvergenceWarning) for item in caught):
             raise RuntimeError("ConvergenceWarning: fitting cannot be sealed")
         gene_filter = pipeline.named_steps["gene_filter"]
@@ -404,7 +457,7 @@ def _fit_and_seal(
         stage = "fitted"
         manifest = {
             "version": VERSION,
-            "scope": "fitting_only_no_test_access",
+            "scope": execution_scope,
             "source_revision": source_revision,
             "config_sha256": config_sha256,
             "split_sha256": split_sha256,
@@ -425,6 +478,7 @@ def _fit_and_seal(
             "retained_gene_sha256": sequence_digest(retained),
             "attempt_id": attempt_id,
             "authorization_reference": authorization_reference,
+            "authorization_sha256": authorization_sha256,
             "full_source_hash_verified": False,
             "source_row_equality_verified": False,
             "software": {
@@ -441,13 +495,13 @@ def _fit_and_seal(
         }
         validate_manifest(manifest)
         _new_json(output / "manifest.json", manifest)
-        checkpoint("before_seal")
+        checked("before_seal")
         _new_json(
             output / "success.json",
             {"status": "sealed", "manifest_sha256": sha256_file(output / "manifest.json")},
         )
         verify_sealed_fit(output, manifest, completed=False)
-        checkpoint("before_complete")
+        checked("before_complete")
         _state(
             output,
             "completed",
@@ -455,7 +509,7 @@ def _fit_and_seal(
             success_sha256=sha256_file(output / "success.json"),
         )
         verify_sealed_fit(output, manifest)
-        checkpoint("after_complete")
+        checked("after_complete")
         return manifest
     except BaseException as exc:
         try:
@@ -503,7 +557,7 @@ def verify_sealed_fit(
     if (
         manifest.get("version") != VERSION
         or set(manifest) != MANIFEST_FIELDS
-        or manifest.get("scope") != "fitting_only_no_test_access"
+        or manifest.get("scope") not in {"synthetic", "claimed_synthetic"}
         or manifest.get("class_order") != list(LABELS)
         or manifest.get("label_column") != "true_label"
         or manifest.get("full_source_hash_verified") is not False
@@ -513,6 +567,50 @@ def verify_sealed_fit(
         != {"pipeline.joblib", "training_gene_list.tsv", "training_manifest.json"}
     ):
         raise ValueError("Fitting manifest contract differs")
+    if manifest["scope"] == "synthetic":
+        if (
+            manifest.get("authorization_sha256") is not None
+            or output.name == OUTPUT_DIRECTORY.name
+            or output.resolve().is_relative_to(
+                (Path(__file__).resolve().parents[2] / "data").resolve()
+            )
+            or not all(
+                isinstance(manifest.get(key), str) and manifest[key].startswith("synthetic-")
+                for key in ("source_revision", "attempt_id", "authorization_reference")
+            )
+        ):
+            raise ValueError("Synthetic seal cannot claim production authorization")
+    else:
+        if not _sha(manifest.get("authorization_sha256")):
+            raise ValueError("Claimed seal lacks authorization checksum")
+        from oncorna.final_model_fit_real import (
+            derive_real_fit_binding,
+            verify_claimed_synthetic_context,
+        )
+
+        root = output.parents[2]
+        binding = derive_real_fit_binding(root)
+        if (
+            manifest["fit_identity_sha256"] != identity_digest(binding.inputs.fit_pairs)
+            or manifest["original_gene_sha256"] != sequence_digest(binding.inputs.gene_ids)
+            or manifest["ordered_true_label_sha256"] != _digest(binding.inputs.true_labels)
+            or manifest["label_table_hashes"] != binding.inputs.label_table_hashes
+            or manifest["fit_count"] != len(binding.inputs.fit_pairs)
+            or manifest["original_gene_count"] != len(binding.inputs.gene_ids)
+        ):
+            raise ValueError("Claimed fitting manifest differs from frozen binding")
+        verify_claimed_synthetic_context(
+            root,
+            output,
+            binding.inputs,
+            manifest["authorization_sha256"],
+            manifest["attempt_id"],
+            manifest["authorization_reference"],
+            manifest["source_revision"],
+            manifest["config_sha256"],
+            manifest["split_sha256"],
+            manifest["fit_expression_sha256"],
+        )
     frozen_parameters = {
         "expression_gt": 1.0,
         "minimum_sample_fraction": 0.20,

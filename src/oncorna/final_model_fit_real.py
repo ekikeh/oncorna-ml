@@ -201,6 +201,76 @@ def _claim_record(prepared: VerifiedPreparation) -> dict[str, str]:
     }
 
 
+def verify_claimed_synthetic_context(
+    root: Path,
+    output: Path,
+    inputs: FitInputs,
+    authorization_sha256: str,
+    attempt_id: str,
+    approval_reference: str,
+    revision: str,
+    config_sha256: str,
+    split_sha256: str,
+    expression_sha256: str,
+) -> None:
+    """Reconcile a synthetic claim independently of caller-supplied callbacks."""
+    root = root.resolve(strict=True)
+    project_data = Path(__file__).resolve().parents[2] / "data"
+    if root == Path(__file__).resolve().parents[
+        2
+    ] or inputs.expression_path.resolve().is_relative_to(project_data.resolve()):
+        raise AuthorizationError("Real final-model fitting remains disabled")
+    fixed = root / AUTHORIZATION_PATH
+    marker = root / ATTEMPT_PATH
+    if not marker.is_file():
+        raise AuthorizationError("Synthetic fitting attempt claim is missing")
+    if (
+        output != root / OUTPUT_DIRECTORY
+        or output.parent.resolve(strict=True) != output.parent
+        or fixed.parent.resolve(strict=True) != fixed.parent
+        or fixed.resolve(strict=True) != fixed
+        or marker.parent.resolve(strict=True) != marker.parent
+        or marker.resolve(strict=True) != marker
+        or _revision(root) != revision
+    ):
+        raise AuthorizationError("Synthetic fitting paths or revision differ")
+    raw = fixed.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != authorization_sha256:
+        raise AuthorizationError("Fitting authorization checksum differs")
+    record = json.loads(raw)
+    binding = derive_real_fit_binding(root)
+    if (
+        binding.inputs != inputs
+        or any(not item.startswith("SYN-") for pair in inputs.fit_pairs for item in pair)
+        or binding.config_sha256 != config_sha256
+        or binding.split_sha256 != split_sha256
+        or binding.expression_sha256 != expression_sha256
+    ):
+        raise AuthorizationError("Synthetic fitting binding differs")
+    expected = expected_authorization(
+        root,
+        revision=revision,
+        attempt_id=attempt_id,
+        approval_reference=approval_reference,
+        config_sha256=config_sha256,
+        split_sha256=split_sha256,
+        fit_expression_sha256=expression_sha256,
+        ordered_fit_identity_sha256=identity_digest(inputs.fit_pairs),
+        ordered_gene_list_sha256=sequence_digest(inputs.gene_ids),
+        ordered_true_label_sha256=_digest(inputs.true_labels),
+        label_table_hashes=inputs.label_table_hashes,
+    )
+    verify_authorization_record(record, expected)
+    prepared = VerifiedPreparation(
+        binding, authorization_sha256, expected, revision, (0, 0, 0, 0, 0)
+    )
+    claim_bytes = (
+        json.dumps(_claim_record(prepared), sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    if marker.read_bytes() != claim_bytes:
+        raise AuthorizationError("Synthetic attempt claim differs from authorization")
+
+
 def claim_real_fit_attempt(root: Path, authorization_path: Path) -> VerifiedPreparation:
     """Exclusively claim one prepared attempt; never fit or create model output."""
     root = root.resolve(strict=True)
@@ -341,6 +411,9 @@ def _run_claimed_fit(
             source_revision=claimed.revision,
             attempt_id=claimed.authorization["attempt_id"],
             authorization_reference=claimed.authorization["approval_reference"],
+            execution_scope="claimed_synthetic",
+            authorization_sha256=claimed.authorization_sha256,
+            claimed_root=root,
             checkpoint=checkpoint,
             validate_manifest=validate_manifest,
         )

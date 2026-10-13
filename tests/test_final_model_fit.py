@@ -94,8 +94,33 @@ def test_frozen_pipeline_and_complete_seal(tmp_path: Path) -> None:
     assert manifest["model_parameters"]["solver"] == "lbfgs"
     assert manifest["full_source_hash_verified"] is False
     assert manifest["source_row_equality_verified"] is False
+    assert manifest["scope"] == "synthetic"
+    assert manifest["authorization_sha256"] is None
     assert not (output / "test_predictions.tsv").exists()
     assert not (output / "test_metrics.json").exists()
+
+
+def test_direct_noop_callbacks_cannot_seal_production_output(tmp_path: Path) -> None:
+    inputs, config, kwargs = fixture(tmp_path)
+    output = tmp_path / fit_module.OUTPUT_DIRECTORY
+    output.parent.mkdir(parents=True)
+    common = {
+        "values": np.load(inputs.expression_path, allow_pickle=False),
+        "artifact_sha256": kwargs["artifact_sha256"],
+        "config_sha256": kwargs["config_sha256"],
+        "split_sha256": kwargs["split_sha256"],
+        "source_revision": "a" * 40,
+        "attempt_id": str(uuid.uuid4()),
+        "authorization_reference": "forged approval",
+        "authorization_sha256": "f" * 64,
+        "claimed_root": None,
+        "checkpoint": lambda _stage: None,
+        "validate_manifest": lambda _manifest: None,
+    }
+    for scope in ("synthetic", "claimed_synthetic", "production"):
+        with pytest.raises(AuthorizationError):
+            fit_module._fit_and_seal(inputs, config, output, execution_scope=scope, **common)
+        assert not output.exists()
 
 
 @pytest.mark.parametrize("change", ["label_column", "patient", "gene", "label_digest"])

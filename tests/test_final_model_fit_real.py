@@ -7,6 +7,7 @@ import os
 import uuid
 from pathlib import Path
 
+import numpy as np
 import pytest
 import yaml
 from test_final_test import synthetic_real_adapter_metadata
@@ -213,10 +214,45 @@ def test_claimed_synthetic_fit_reuses_sealed_pipeline(
     assert manifest["fit_count"] == len(binding.inputs.fit_pairs) == 40
     assert manifest["original_gene_count"] == 6
     assert manifest["attempt_id"] == json.loads(authorization.read_text())["attempt_id"]
+    assert manifest["scope"] == "claimed_synthetic"
+    assert manifest["authorization_sha256"] == sha256_file(authorization)
     assert (tmp_path / ATTEMPT_PATH).exists()
     assert not (output / "test_predictions.tsv").exists()
     with pytest.raises(FileExistsError):
         real._run_claimed_fit(tmp_path, authorization, synthetic_fixture=True)
+
+
+@pytest.mark.parametrize("change", ["missing_claim", "attempt_id", "auth_hash", "values"])
+def test_direct_claimed_engine_rechecks_evidence_without_callbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    authorization, binding = synthetic_approval(tmp_path, monkeypatch)
+    record = json.loads(authorization.read_text())
+    if change != "missing_claim":
+        real.claim_real_fit_attempt(tmp_path, authorization)
+    values = np.load(binding.inputs.expression_path, allow_pickle=False)
+    if change == "values":
+        values = values.copy()
+        values[0, 0] += 1.0
+    with pytest.raises(AuthorizationError):
+        fit_module._fit_and_seal(
+            binding.inputs,
+            yaml.safe_load((tmp_path / "configs/final_test_v1.yaml").read_bytes()),
+            tmp_path / OUTPUT_DIRECTORY,
+            values=values,
+            artifact_sha256=binding.expression_sha256,
+            config_sha256=binding.config_sha256,
+            split_sha256=binding.split_sha256,
+            source_revision="a" * 40,
+            attempt_id=str(uuid.uuid4()) if change == "attempt_id" else record["attempt_id"],
+            authorization_reference=record["approval_reference"],
+            execution_scope="claimed_synthetic",
+            authorization_sha256="f" * 64 if change == "auth_hash" else sha256_file(authorization),
+            claimed_root=tmp_path,
+            checkpoint=lambda _stage: None,
+            validate_manifest=lambda _manifest: None,
+        )
+    assert not (tmp_path / OUTPUT_DIRECTORY).exists()
 
 
 @pytest.mark.parametrize(
@@ -338,4 +374,29 @@ def test_claimed_fit_rejects_tampered_seal(
     with (output / name).open("ab") as handle:
         handle.write(b"tamper")
     with pytest.raises(ValueError):
+        verify_sealed_fit(output)
+
+
+@pytest.mark.parametrize("field", ["authorization_sha256", "attempt_id", "scope"])
+def test_resealed_forged_claim_metadata_is_not_trusted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    authorization, _ = synthetic_approval(tmp_path, monkeypatch)
+    real._run_claimed_fit(tmp_path, authorization, synthetic_fixture=True)
+    output = tmp_path / OUTPUT_DIRECTORY
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest[field] = "f" * 64 if field == "authorization_sha256" else "forged"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest_sha = sha256_file(manifest_path)
+    success_path = output / "success.json"
+    success_path.write_text(
+        json.dumps({"status": "sealed", "manifest_sha256": manifest_sha}), encoding="utf-8"
+    )
+    history_path = output / "fit_state.jsonl"
+    history = [json.loads(line) for line in history_path.read_text().splitlines()]
+    history[-1]["manifest_sha256"] = manifest_sha
+    history[-1]["success_sha256"] = sha256_file(success_path)
+    history_path.write_text("\n".join(json.dumps(row) for row in history) + "\n", encoding="utf-8")
+    with pytest.raises((AuthorizationError, ValueError)):
         verify_sealed_fit(output)
