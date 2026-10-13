@@ -579,3 +579,67 @@ def test_resealed_forged_claim_metadata_is_not_trusted(
     history_path.write_text("\n".join(json.dumps(row) for row in history) + "\n", encoding="utf-8")
     with pytest.raises((AuthorizationError, ValueError)):
         verify_sealed_fit(output)
+
+
+def test_coordinated_local_rewrite_is_outside_self_contained_verifier_guarantee(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Local hashes detect inconsistency, not a rewritten bundle's authenticity."""
+    authorization, _ = synthetic_approval(tmp_path, monkeypatch)
+    original = real._run_claimed_fit(
+        tmp_path, authorization, synthetic_fixture=True, production_fixture=True
+    )
+    output = tmp_path / OUTPUT_DIRECTORY
+    model_path = output / "pipeline.joblib"
+    with model_path.open("ab") as handle:
+        handle.write(b"synthetic coordinated rewrite")
+
+    # An isolated model change is detected before other locally editable files change.
+    with pytest.raises(ValueError, match="checksum"):
+        verify_sealed_fit(output)
+
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest["output_hashes"]["pipeline.joblib"] = sha256_file(model_path)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    success_path = output / "success.json"
+    success_path.write_text(
+        json.dumps({"status": "sealed", "manifest_sha256": sha256_file(manifest_path)}),
+        encoding="utf-8",
+    )
+    history_path = output / "fit_state.jsonl"
+    history = [json.loads(line) for line in history_path.read_text().splitlines()]
+    history[-1]["manifest_sha256"] = sha256_file(manifest_path)
+    history[-1]["success_sha256"] = sha256_file(success_path)
+    history_path.write_text("\n".join(json.dumps(row) for row in history) + "\n", encoding="utf-8")
+
+    # All self-contained checks now agree, but an independently retained
+    # expected manifest would still identify the changed model hash.
+    assert verify_sealed_fit(output) == manifest
+    assert manifest["scope"] == "production_fixture"
+    with pytest.raises(ValueError, match="approved record"):
+        verify_sealed_fit(output, expected=original)
+
+
+def test_synthetic_fixture_cannot_be_resealed_as_production(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authorization, _ = synthetic_approval(tmp_path, monkeypatch)
+    real._run_claimed_fit(tmp_path, authorization, synthetic_fixture=True, production_fixture=True)
+    output = tmp_path / OUTPUT_DIRECTORY
+    manifest_path = output / "manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    manifest["scope"] = "production"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    success_path = output / "success.json"
+    success_path.write_text(
+        json.dumps({"status": "sealed", "manifest_sha256": sha256_file(manifest_path)}),
+        encoding="utf-8",
+    )
+    history_path = output / "fit_state.jsonl"
+    history = [json.loads(line) for line in history_path.read_text().splitlines()]
+    history[-1]["manifest_sha256"] = sha256_file(manifest_path)
+    history[-1]["success_sha256"] = sha256_file(success_path)
+    history_path.write_text("\n".join(json.dumps(row) for row in history) + "\n", encoding="utf-8")
+    with pytest.raises(AuthorizationError, match="reviewed checkout"):
+        verify_sealed_fit(output)

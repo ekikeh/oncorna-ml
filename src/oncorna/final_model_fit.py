@@ -543,7 +543,14 @@ def _fit_and_seal(
 def verify_sealed_fit(
     output: Path, expected: dict[str, Any] | None = None, *, completed: bool = True
 ) -> dict[str, Any]:
-    """Verify seals and metadata without deserializing untrusted joblib bytes."""
+    """Check local artifact consistency without deserializing joblib bytes.
+
+    The hashes, success marker and state history are all locally editable. This
+    self-contained check detects missing or inconsistent changes, but cannot
+    authenticate a coordinated rewrite of the entire output bundle. A later
+    consumer needing that guarantee must compare against a digest retained
+    independently of this directory before trusting model bytes.
+    """
     states = [
         json.loads(line)
         for line in (output / "fit_state.jsonl").read_text(encoding="utf-8").splitlines()

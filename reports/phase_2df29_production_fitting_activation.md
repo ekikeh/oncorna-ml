@@ -28,9 +28,11 @@ reject changes. Caller-provided callbacks cannot replace these checks.
 distinct manifest scopes. Synthetic scopes cannot be relabeled into production.
 The independent verifier accepts `production` only if its authorization,
 claim and frozen real fitting binding reconcile. The manifest contains the
-authorization checksum and attempt ID; the success marker seals the manifest,
-and terminal history seals both. Verification hashes model bytes without
-deserializing joblib. Failed or uncertain outputs and claims remain for manual
+authorization checksum and attempt ID; the success marker records the manifest
+checksum, and terminal history records both checksums. These locally editable
+records establish internal consistency, not independent authentication of a
+coordinated rewrite. Verification hashes model bytes without deserializing
+joblib. Failed or uncertain outputs and claims remain for manual
 reconciliation; the output is never overwritten or retried automatically.
 
 ## Scientific and privacy boundary
@@ -50,7 +52,10 @@ authenticated. The Windows claim supplies exclusive creation and a restrictive
 ACL; it does not prove directory-entry persistence after power loss or provide
 a globally enforced one-attempt service. A crash or uncertain state consumes
 the attempt until manual review and a new explicit authorization. Python code
-running with the operator's permissions is not a security sandbox.
+running with the operator's permissions is not a security sandbox. A later
+test stage that needs to authenticate the saved model against coordinated
+rewriting must compare its digest with evidence retained independently of the
+editable fitting-output bundle before loading model bytes.
 
 All execution tests for this checkpoint use synthetic identities and values.
 The `production_fixture` scope exercises claim-to-seal behavior without
