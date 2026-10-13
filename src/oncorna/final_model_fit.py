@@ -15,7 +15,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import joblib
 import numpy as np
@@ -206,9 +206,11 @@ def verify_real_fit_authorization(root: Path, authorization_path: Path) -> str:
     return verify_real_fit_preparation(root, authorization_path).authorization_sha256
 
 
-def run_real_fit(*_args: object, **_kwargs: object) -> None:
-    """F21 has no enabled real entry point, regardless of local records."""
-    raise AuthorizationError("Real final-model fitting remains disabled pending separate approval")
+def run_real_fit(root: Path, authorization_path: Path | None = None) -> dict[str, Any]:
+    """F25 public entry point; the real branch remains unconditionally disabled."""
+    from oncorna.final_model_fit_real import _run_claimed_fit
+
+    return _run_claimed_fit(root, authorization_path, synthetic_fixture=False)
 
 
 def _new_json(path: Path, value: dict[str, Any]) -> None:
@@ -294,6 +296,39 @@ def run_synthetic_fit(
     ):
         raise ValueError("Frozen fitting identity, gene or true-label order differs")
     values = _validate_inputs(inputs, config, artifact_sha256)
+    return _fit_and_seal(
+        inputs,
+        config,
+        output,
+        values=values,
+        artifact_sha256=artifact_sha256,
+        config_sha256=config_sha256,
+        split_sha256=split_sha256,
+        source_revision=source_revision,
+        attempt_id=attempt_id,
+        authorization_reference=authorization_reference,
+        checkpoint=lambda _stage: None,
+        validate_manifest=lambda _manifest: None,
+    )
+
+
+def _fit_and_seal(
+    inputs: FitInputs,
+    config: dict[str, Any],
+    output: Path,
+    *,
+    values: np.ndarray,
+    artifact_sha256: str,
+    config_sha256: str,
+    split_sha256: str,
+    source_revision: str,
+    attempt_id: str,
+    authorization_reference: str,
+    checkpoint: Callable[[str], None],
+    validate_manifest: Callable[[dict[str, Any]], None],
+) -> dict[str, Any]:
+    """One frozen fitting and sealing implementation for synthetic and future real use."""
+    checkpoint("before_output")
     if output.exists():
         raise FileExistsError("Fitting attempt already exists")
     output.mkdir(parents=True, exist_ok=False)
@@ -302,6 +337,7 @@ def run_synthetic_fit(
         _state(output, "reserved")
         _state(output, "fitting")
         stage = "fitting"
+        checkpoint("before_fit")
         frame = pd.DataFrame(
             np.asarray(values),
             index=tuple(sample for _, sample in inputs.fit_pairs),
@@ -311,6 +347,7 @@ def run_synthetic_fit(
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             pipeline.fit(frame, np.asarray(inputs.true_labels, dtype=object))
+        checkpoint("after_fit")
         if any(issubclass(item.category, ConvergenceWarning) for item in caught):
             raise RuntimeError("ConvergenceWarning: fitting cannot be sealed")
         gene_filter = pipeline.named_steps["gene_filter"]
@@ -402,12 +439,15 @@ def run_synthetic_fit(
                 for name in ("pipeline.joblib", "training_gene_list.tsv", "training_manifest.json")
             },
         }
+        validate_manifest(manifest)
         _new_json(output / "manifest.json", manifest)
+        checkpoint("before_seal")
         _new_json(
             output / "success.json",
             {"status": "sealed", "manifest_sha256": sha256_file(output / "manifest.json")},
         )
         verify_sealed_fit(output, manifest, completed=False)
+        checkpoint("before_complete")
         _state(
             output,
             "completed",
@@ -415,6 +455,7 @@ def run_synthetic_fit(
             success_sha256=sha256_file(output / "success.json"),
         )
         verify_sealed_fit(output, manifest)
+        checkpoint("after_complete")
         return manifest
     except BaseException as exc:
         try:

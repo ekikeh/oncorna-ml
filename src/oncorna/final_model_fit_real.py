@@ -9,8 +9,9 @@ import subprocess
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
+import numpy as np
 import yaml
 
 from oncorna.final_fit_export import sequence_digest
@@ -25,8 +26,10 @@ from oncorna.final_model_fit import (
     FitInputs,
     _canonical,
     _digest,
+    _fit_and_seal,
     expected_authorization,
     verify_authorization_record,
+    verify_sealed_fit,
 )
 from oncorna.final_test import (
     FIT_COUNTS,
@@ -55,6 +58,7 @@ class VerifiedPreparation:
     authorization_sha256: str
     authorization: dict[str, Any]
     revision: str
+    expression_stamp: tuple[int, int, int, int, int]
 
 
 def _derive_binding(
@@ -176,7 +180,25 @@ def verify_real_fit_preparation(root: Path, authorization_path: Path) -> Verifie
         label_table_hashes=binding.inputs.label_table_hashes,
     )
     verify_authorization_record(record, expected)
-    return VerifiedPreparation(binding, hashlib.sha256(raw).hexdigest(), expected, revision)
+    expression = binding.inputs.expression_path
+    if expression.resolve(strict=True) != expression:
+        raise AuthorizationError("Fitting-only expression path is redirected")
+    stamp = _stamp(expression.stat())
+    if sha256_file(expression) != binding.expression_sha256 or _stamp(expression.stat()) != stamp:
+        raise AuthorizationError("Fitting-only expression changed during preparation")
+    return VerifiedPreparation(binding, hashlib.sha256(raw).hexdigest(), expected, revision, stamp)
+
+
+def _claim_record(prepared: VerifiedPreparation) -> dict[str, str]:
+    return {
+        "attempt_id": prepared.authorization["attempt_id"],
+        "approval_reference": prepared.authorization["approval_reference"],
+        "authorization_sha256": prepared.authorization_sha256,
+        "approved_commit": prepared.revision,
+        "canonical_checkout": prepared.authorization["canonical_checkout"],
+        "canonical_output": prepared.authorization["canonical_output"],
+        "status": "claimed_before_fitting",
+    }
 
 
 def claim_real_fit_attempt(root: Path, authorization_path: Path) -> VerifiedPreparation:
@@ -186,14 +208,141 @@ def claim_real_fit_attempt(root: Path, authorization_path: Path) -> VerifiedPrep
     fixed, marker = _fixed_paths(root, authorization_path)
     if hashlib.sha256(fixed.read_bytes()).hexdigest() != prepared.authorization_sha256:
         raise AuthorizationError("Fitting authorization changed before claim")
-    claim = {
-        "attempt_id": prepared.authorization["attempt_id"],
-        "approval_reference": prepared.authorization["approval_reference"],
-        "authorization_sha256": prepared.authorization_sha256,
-        "approved_commit": prepared.revision,
-        "canonical_checkout": prepared.authorization["canonical_checkout"],
-        "canonical_output": prepared.authorization["canonical_output"],
-        "status": "claimed_before_fitting",
-    }
-    _create_local_claim(marker, claim)
+    _create_local_claim(marker, _claim_record(prepared))
     return prepared
+
+
+def _stamp(stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    """Available local file identity and high-resolution mutation metadata."""
+    if not stat.st_dev or not stat.st_ino:
+        raise PermissionError("Filesystem cannot provide a usable fitting-file identity")
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+def _hash_handle(handle: BinaryIO) -> str:
+    handle.seek(0)
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+    handle.seek(0)
+    return digest.hexdigest()
+
+
+def _verified_source_handle(
+    handle: BinaryIO, path: Path, approved_sha256: str
+) -> tuple[int, int, int, int, int]:
+    if path.resolve(strict=True) != path:
+        raise AuthorizationError("Fitting-only expression path is redirected")
+    baseline = _stamp(os.fstat(handle.fileno()))
+    if _stamp(path.stat()) != baseline or _hash_handle(handle) != approved_sha256:
+        raise AuthorizationError("Fitting-only expression changed before fitting")
+    if _stamp(os.fstat(handle.fileno())) != baseline or _stamp(path.stat()) != baseline:
+        raise AuthorizationError("Fitting-only expression changed during verification")
+    return baseline
+
+
+def _run_claimed_fit(
+    root: Path, authorization_path: Path | None, *, synthetic_fixture: bool
+) -> dict[str, Any]:
+    """Connect claim, verified inputs and common seal; real execution stays locked."""
+    if not synthetic_fixture:
+        raise AuthorizationError(
+            "Real final-model fitting remains disabled pending separate approval"
+        )
+    root = root.resolve(strict=True)
+    if synthetic_fixture and root == Path(__file__).resolve().parents[2]:
+        raise PermissionError("Synthetic fitting cannot use the real project checkout")
+    fixed = root / AUTHORIZATION_PATH
+    if authorization_path is None:
+        authorization_path = fixed
+    prepared = verify_real_fit_preparation(root, authorization_path)
+    inputs = prepared.binding.inputs
+    if synthetic_fixture and (
+        not inputs.fit_pairs
+        or any(not item.startswith("SYN-") for pair in inputs.fit_pairs for item in pair)
+        or inputs.gene_ids != tuple(f"G{i}" for i in range(6))
+        or inputs.expression_path.resolve().is_relative_to(
+            Path(__file__).resolve().parents[2] / "data"
+        )
+    ):
+        raise PermissionError("Synthetic integration requires synthetic fitting-only inputs")
+    claimed = claim_real_fit_attempt(root, authorization_path)
+    if claimed != prepared:
+        raise AuthorizationError("Fitting inputs or authorization changed before claim")
+    marker = root / ATTEMPT_PATH
+    marker_stamp = _stamp(marker.stat())
+    claim_bytes = (
+        json.dumps(_claim_record(claimed), sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    output = root / OUTPUT_DIRECTORY
+    config = yaml.safe_load((root / "configs/final_test_v1.yaml").read_bytes())
+    validate_protocol(config, synthetic_fixture=synthetic_fixture)
+    expression = inputs.expression_path
+    with expression.open("rb", buffering=0) as source:
+        source_stamp = _verified_source_handle(
+            source, expression, claimed.binding.expression_sha256
+        )
+        if source_stamp != claimed.expression_stamp:
+            raise AuthorizationError("Fitting-only expression identity changed after preparation")
+
+        def checkpoint(_stage: str) -> None:
+            if (
+                _revision(root) != claimed.revision
+                or sha256_file(fixed) != claimed.authorization_sha256
+                or marker.resolve(strict=True) != marker
+                or _stamp(marker.stat()) != marker_stamp
+                or marker.read_bytes() != claim_bytes
+                or output.parent.resolve(strict=True) != output.parent
+                or (output.exists() and output.resolve(strict=True) != output)
+                or derive_real_fit_binding(root) != claimed.binding
+                or _verified_source_handle(source, expression, claimed.binding.expression_sha256)
+                != source_stamp
+            ):
+                raise AuthorizationError("Claimed fitting inputs, paths or revision changed")
+
+        def validate_manifest(manifest: dict[str, Any]) -> None:
+            expected = {
+                "source_revision": claimed.revision,
+                "config_sha256": claimed.authorization["config_sha256"],
+                "split_sha256": claimed.authorization["split_sha256"],
+                "fit_expression_sha256": claimed.authorization["fit_expression_sha256"],
+                "fit_identity_sha256": claimed.authorization["ordered_fit_identity_sha256"],
+                "original_gene_sha256": claimed.authorization["ordered_gene_list_sha256"],
+                "ordered_true_label_sha256": claimed.authorization["ordered_true_label_sha256"],
+                "label_table_hashes": claimed.authorization["label_table_hashes"],
+                "class_order": claimed.authorization["class_order"],
+                "model_parameters": claimed.authorization["model_parameters"],
+                "attempt_id": claimed.authorization["attempt_id"],
+                "authorization_reference": claimed.authorization["approval_reference"],
+                "fit_count": len(inputs.fit_pairs),
+                "original_gene_count": len(inputs.gene_ids),
+            }
+            if any(manifest.get(key) != value for key, value in expected.items()):
+                raise AuthorizationError("Fitting manifest differs from the approved claim")
+
+        checkpoint("before_values")
+        values = np.load(source, allow_pickle=False)
+        if (
+            values.shape != (len(inputs.fit_pairs), len(inputs.gene_ids))
+            or values.dtype != np.dtype("<f8")
+            or not values.flags.c_contiguous
+            or not np.isfinite(values).all()
+        ):
+            raise ValueError("Fitting-only expression layout or values differ")
+        checkpoint("after_values")
+        manifest = _fit_and_seal(
+            inputs,
+            config,
+            output,
+            values=values,
+            artifact_sha256=claimed.binding.expression_sha256,
+            config_sha256=claimed.binding.config_sha256,
+            split_sha256=claimed.binding.split_sha256,
+            source_revision=claimed.revision,
+            attempt_id=claimed.authorization["attempt_id"],
+            authorization_reference=claimed.authorization["approval_reference"],
+            checkpoint=checkpoint,
+            validate_manifest=validate_manifest,
+        )
+    validate_manifest(manifest)
+    return verify_sealed_fit(output, manifest)

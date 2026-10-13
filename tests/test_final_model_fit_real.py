@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 import yaml
 from test_final_test import synthetic_real_adapter_metadata
 
+import oncorna.final_model_fit as fit_module
 import oncorna.final_model_fit_real as real
 from oncorna.final_fit_export import sequence_digest
 from oncorna.final_model_fit import (
@@ -19,6 +21,7 @@ from oncorna.final_model_fit import (
     _digest,
     expected_authorization,
     run_real_fit,
+    verify_sealed_fit,
 )
 from oncorna.final_test import LABELS, AuthorizationError, run_real
 from oncorna.preprocessing import identity_digest, sha256_file
@@ -198,3 +201,141 @@ def test_real_fit_and_final_test_still_locked(tmp_path: Path) -> None:
     config_path = Path(__file__).resolve().parents[1] / "configs/final_test_v1.yaml"
     with pytest.raises(AuthorizationError):
         run_real(tmp_path, config_path)
+
+
+def test_claimed_synthetic_fit_reuses_sealed_pipeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authorization, binding = synthetic_approval(tmp_path, monkeypatch)
+    manifest = real._run_claimed_fit(tmp_path, authorization, synthetic_fixture=True)
+    output = tmp_path / OUTPUT_DIRECTORY
+    assert manifest == verify_sealed_fit(output)
+    assert manifest["fit_count"] == len(binding.inputs.fit_pairs) == 40
+    assert manifest["original_gene_count"] == 6
+    assert manifest["attempt_id"] == json.loads(authorization.read_text())["attempt_id"]
+    assert (tmp_path / ATTEMPT_PATH).exists()
+    assert not (output / "test_predictions.tsv").exists()
+    with pytest.raises(FileExistsError):
+        real._run_claimed_fit(tmp_path, authorization, synthetic_fixture=True)
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["expression", "label_table", "claim", "replacement", "authorization", "split", "gene"],
+)
+def test_change_after_claim_consumes_attempt_before_fitting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    authorization, binding = synthetic_approval(tmp_path, monkeypatch)
+    config = yaml.safe_load((tmp_path / "configs/final_test_v1.yaml").read_text())
+    monkeypatch.setattr(
+        real,
+        "derive_real_fit_binding",
+        lambda root: real._derive_binding(
+            root, config, synthetic_fixture=True, class_counts=dict.fromkeys(LABELS, 8)
+        ),
+    )
+    original_claim = real.claim_real_fit_attempt
+
+    def change_after_claim(root: Path, path: Path) -> real.VerifiedPreparation:
+        prepared = original_claim(root, path)
+        if change == "expression":
+            with binding.inputs.expression_path.open("ab") as handle:
+                handle.write(b"mutation")
+        elif change == "label_table":
+            label_path = root / "data/processed/modeling_v1/oof_predictions.tsv"
+            with label_path.open("a", encoding="utf-8") as handle:
+                handle.write("tamper\n")
+        elif change == "claim":
+            (root / ATTEMPT_PATH).write_text("{}")
+        elif change == "replacement":
+            source = binding.inputs.expression_path
+            replacement = source.with_name("replacement.npy")
+            replacement.write_bytes(source.read_bytes())
+            os.replace(replacement, source)
+        elif change == "authorization":
+            path.write_text(path.read_text() + " ")
+        else:
+            name = "frozen_split" if change == "split" else "all_gene_schema"
+            metadata = root / config["inputs"][name]
+            metadata.write_text(metadata.read_text() + " ")
+        return prepared
+
+    monkeypatch.setattr(real, "claim_real_fit_attempt", change_after_claim)
+    with pytest.raises((AuthorizationError, ValueError)):
+        real._run_claimed_fit(tmp_path, authorization, synthetic_fixture=True)
+    assert (tmp_path / ATTEMPT_PATH).exists()
+    assert not (tmp_path / OUTPUT_DIRECTORY).exists()
+    with pytest.raises(FileExistsError):
+        real._run_claimed_fit(tmp_path, authorization, synthetic_fixture=True)
+
+
+def test_mutation_during_fit_preserves_failed_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authorization, _ = synthetic_approval(tmp_path, monkeypatch)
+    config = yaml.safe_load((tmp_path / "configs/final_test_v1.yaml").read_text())
+    monkeypatch.setattr(
+        real,
+        "derive_real_fit_binding",
+        lambda root: real._derive_binding(
+            root, config, synthetic_fixture=True, class_counts=dict.fromkeys(LABELS, 8)
+        ),
+    )
+    original_pipeline = fit_module.make_pipeline
+
+    def mutate_after_fit(*args: object, **kwargs: object) -> object:
+        pipeline = original_pipeline(*args, **kwargs)
+        original_fit = pipeline.fit
+
+        def fit_then_change(*fit_args: object, **fit_kwargs: object) -> object:
+            result = original_fit(*fit_args, **fit_kwargs)
+            label_path = tmp_path / "data/processed/validation_v1/validation_predictions.tsv"
+            with label_path.open("a", encoding="utf-8") as handle:
+                handle.write("mutation\n")
+            return result
+
+        pipeline.fit = fit_then_change
+        return pipeline
+
+    monkeypatch.setattr(fit_module, "make_pipeline", mutate_after_fit)
+    with pytest.raises(ValueError, match="checksum"):
+        real._run_claimed_fit(tmp_path, authorization, synthetic_fixture=True)
+    output = tmp_path / OUTPUT_DIRECTORY
+    assert (tmp_path / ATTEMPT_PATH).exists()
+    assert (output / "failure.json").exists()
+    with pytest.raises(ValueError, match="incomplete"):
+        verify_sealed_fit(output)
+
+
+def test_interrupted_seal_retains_claim_and_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authorization, _ = synthetic_approval(tmp_path, monkeypatch)
+    original_write = fit_module._new_json
+
+    def stop_at_success(path: Path, value: dict) -> None:
+        if path.name == "success.json":
+            raise OSError("synthetic seal interruption")
+        original_write(path, value)
+
+    monkeypatch.setattr(fit_module, "_new_json", stop_at_success)
+    with pytest.raises(OSError, match="seal interruption"):
+        real._run_claimed_fit(tmp_path, authorization, synthetic_fixture=True)
+    assert (tmp_path / ATTEMPT_PATH).exists()
+    assert (tmp_path / OUTPUT_DIRECTORY / "failure.json").exists()
+    with pytest.raises(FileExistsError):
+        real._run_claimed_fit(tmp_path, authorization, synthetic_fixture=True)
+
+
+@pytest.mark.parametrize("name", ["pipeline.joblib", "manifest.json"])
+def test_claimed_fit_rejects_tampered_seal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    authorization, _ = synthetic_approval(tmp_path, monkeypatch)
+    real._run_claimed_fit(tmp_path, authorization, synthetic_fixture=True)
+    output = tmp_path / OUTPUT_DIRECTORY
+    with (output / name).open("ab") as handle:
+        handle.write(b"tamper")
+    with pytest.raises(ValueError):
+        verify_sealed_fit(output)
