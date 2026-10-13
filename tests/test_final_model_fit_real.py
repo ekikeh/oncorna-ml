@@ -124,6 +124,21 @@ def test_modified_frozen_inputs_rejected(tmp_path: Path, change: str) -> None:
         )
 
 
+def test_wrong_ground_truth_class_counts_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, _ = synthetic_binding(tmp_path)
+    monkeypatch.setattr(
+        real.RealSource,
+        "_fit_labels",
+        lambda _self, _snapshot: np.asarray([LABELS[0]] * 40, dtype=object),
+    )
+    with pytest.raises(ValueError, match="true-label counts"):
+        real._derive_binding(
+            tmp_path, config, synthetic_fixture=True, class_counts=dict.fromkeys(LABELS, 8)
+        )
+
+
 def test_authorization_is_derived_and_claim_is_exclusive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -140,6 +155,22 @@ def test_authorization_is_derived_and_claim_is_exclusive(
     assert not (tmp_path / OUTPUT_DIRECTORY).exists()
     with pytest.raises(FileExistsError):
         real.claim_real_fit_attempt(tmp_path, authorization)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows claim ACL verification")
+def test_existing_windows_claim_acl_mismatch_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import oncorna.windows_attempt_claim as windows_claim
+
+    authorization, _ = synthetic_approval(tmp_path, monkeypatch)
+    real.claim_real_fit_attempt(tmp_path, authorization)
+    marker = tmp_path / ATTEMPT_PATH
+    windows_claim.verify_existing_claim(marker, marker.read_bytes())
+    dacl_values = iter(["expected", "different"])
+    monkeypatch.setattr(windows_claim, "_dacl_string", lambda _descriptor: next(dacl_values))
+    with pytest.raises(PermissionError, match="ACL"):
+        windows_claim.verify_existing_claim(marker, marker.read_bytes())
 
 
 @pytest.mark.parametrize(
@@ -196,12 +227,22 @@ def test_interrupted_claim_is_preserved_without_retry(
     assert not (tmp_path / OUTPUT_DIRECTORY).exists()
 
 
-def test_real_fit_and_final_test_still_locked(tmp_path: Path) -> None:
-    with pytest.raises(AuthorizationError, match="disabled"):
+def test_real_fit_requires_reviewed_checkout_and_final_test_stays_locked(tmp_path: Path) -> None:
+    with pytest.raises(AuthorizationError, match="reviewed checkout"):
         run_real_fit(tmp_path)
     config_path = Path(__file__).resolve().parents[1] / "configs/final_test_v1.yaml"
     with pytest.raises(AuthorizationError):
         run_real(tmp_path, config_path)
+
+
+def test_synthetic_approval_cannot_activate_real_entry_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authorization, _ = synthetic_approval(tmp_path, monkeypatch)
+    with pytest.raises(AuthorizationError, match="reviewed checkout"):
+        run_real_fit(tmp_path, authorization)
+    assert not (tmp_path / ATTEMPT_PATH).exists()
+    assert not (tmp_path / OUTPUT_DIRECTORY).exists()
 
 
 def test_claimed_synthetic_fit_reuses_sealed_pipeline(
@@ -220,6 +261,141 @@ def test_claimed_synthetic_fit_reuses_sealed_pipeline(
     assert not (output / "test_predictions.tsv").exists()
     with pytest.raises(FileExistsError):
         real._run_claimed_fit(tmp_path, authorization, synthetic_fixture=True)
+
+
+def test_production_fixture_seals_without_claiming_real_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authorization, binding = synthetic_approval(tmp_path, monkeypatch)
+    manifest = real._run_claimed_fit(
+        tmp_path, authorization, synthetic_fixture=True, production_fixture=True
+    )
+    output = tmp_path / OUTPUT_DIRECTORY
+    assert manifest == verify_sealed_fit(output)
+    assert manifest["scope"] == "production_fixture"
+    assert manifest["authorization_sha256"] == sha256_file(authorization)
+    assert manifest["fit_identity_sha256"] == identity_digest(binding.inputs.fit_pairs)
+    assert manifest["original_gene_sha256"] == sequence_digest(binding.inputs.gene_ids)
+    assert not (output / "test_predictions.tsv").exists()
+    with pytest.raises(FileExistsError):
+        real._run_claimed_fit(
+            tmp_path, authorization, synthetic_fixture=True, production_fixture=True
+        )
+
+
+@pytest.mark.parametrize("change", ["no_claim", "attempt_id", "auth_hash", "values"])
+def test_direct_production_fixture_requires_verified_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    authorization, binding = synthetic_approval(tmp_path, monkeypatch)
+    record = json.loads(authorization.read_text())
+    if change != "no_claim":
+        real.claim_real_fit_attempt(tmp_path, authorization)
+    values = np.load(binding.inputs.expression_path, allow_pickle=False)
+    if change == "values":
+        values = values.copy()
+        values[0, 0] += 1
+    with pytest.raises(AuthorizationError):
+        fit_module._fit_and_seal(
+            binding.inputs,
+            yaml.safe_load((tmp_path / "configs/final_test_v1.yaml").read_bytes()),
+            tmp_path / OUTPUT_DIRECTORY,
+            values=values,
+            artifact_sha256=binding.expression_sha256,
+            config_sha256=binding.config_sha256,
+            split_sha256=binding.split_sha256,
+            source_revision="a" * 40,
+            attempt_id=str(uuid.uuid4()) if change == "attempt_id" else record["attempt_id"],
+            authorization_reference=record["approval_reference"],
+            execution_scope="production_fixture",
+            authorization_sha256="f" * 64 if change == "auth_hash" else sha256_file(authorization),
+            claimed_root=tmp_path,
+            checkpoint=lambda _stage: None,
+            validate_manifest=lambda _manifest: None,
+        )
+    assert not (tmp_path / OUTPUT_DIRECTORY).exists()
+
+
+def test_real_production_scope_cannot_use_synthetic_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    authorization, binding = synthetic_approval(tmp_path, monkeypatch)
+    real.claim_real_fit_attempt(tmp_path, authorization)
+    with pytest.raises((AuthorizationError, ValueError)):
+        fit_module._fit_and_seal(
+            binding.inputs,
+            yaml.safe_load((tmp_path / "configs/final_test_v1.yaml").read_bytes()),
+            tmp_path / OUTPUT_DIRECTORY,
+            values=np.load(binding.inputs.expression_path, allow_pickle=False),
+            artifact_sha256=binding.expression_sha256,
+            config_sha256=binding.config_sha256,
+            split_sha256=binding.split_sha256,
+            source_revision="a" * 40,
+            attempt_id=json.loads(authorization.read_text())["attempt_id"],
+            authorization_reference="synthetic explicit approval",
+            execution_scope="production",
+            authorization_sha256=sha256_file(authorization),
+            claimed_root=tmp_path,
+            checkpoint=lambda _stage: None,
+            validate_manifest=lambda _manifest: None,
+        )
+    assert not (tmp_path / OUTPUT_DIRECTORY).exists()
+
+
+@pytest.mark.parametrize("change", ["claim", "authorization", "replacement", "revision"])
+def test_direct_production_fixture_rechecks_during_fit_with_noop_callbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    authorization, binding = synthetic_approval(tmp_path, monkeypatch)
+    real.claim_real_fit_attempt(tmp_path, authorization)
+    original_pipeline = fit_module.make_pipeline
+
+    def mutate_after_fit(*args: object, **kwargs: object) -> object:
+        pipeline = original_pipeline(*args, **kwargs)
+        original_fit = pipeline.fit
+
+        def fit_then_change(*fit_args: object, **fit_kwargs: object) -> object:
+            result = original_fit(*fit_args, **fit_kwargs)
+            if change == "claim":
+                (tmp_path / ATTEMPT_PATH).write_text("{}", encoding="utf-8")
+            elif change == "authorization":
+                authorization.write_text(authorization.read_text() + " ", encoding="utf-8")
+            elif change == "replacement":
+                source = binding.inputs.expression_path
+                replacement = source.with_name("replacement.npy")
+                replacement.write_bytes(source.read_bytes())
+                os.replace(replacement, source)
+            else:
+                monkeypatch.setattr(real, "_revision", lambda _root: "b" * 40)
+            return result
+
+        pipeline.fit = fit_then_change
+        return pipeline
+
+    monkeypatch.setattr(fit_module, "make_pipeline", mutate_after_fit)
+    record = json.loads(authorization.read_text())
+    with pytest.raises((AuthorizationError, ValueError)):
+        fit_module._fit_and_seal(
+            binding.inputs,
+            yaml.safe_load((tmp_path / "configs/final_test_v1.yaml").read_bytes()),
+            tmp_path / OUTPUT_DIRECTORY,
+            values=np.load(binding.inputs.expression_path, allow_pickle=False),
+            artifact_sha256=binding.expression_sha256,
+            config_sha256=binding.config_sha256,
+            split_sha256=binding.split_sha256,
+            source_revision="a" * 40,
+            attempt_id=record["attempt_id"],
+            authorization_reference=record["approval_reference"],
+            execution_scope="production_fixture",
+            authorization_sha256=sha256_file(authorization),
+            claimed_root=tmp_path,
+            checkpoint=lambda _stage: None,
+            validate_manifest=lambda _manifest: None,
+        )
+    output = tmp_path / OUTPUT_DIRECTORY
+    assert (output / "failure.json").exists()
+    with pytest.raises(ValueError, match="incomplete"):
+        verify_sealed_fit(output)
 
 
 @pytest.mark.parametrize("change", ["missing_claim", "attempt_id", "auth_hash", "values"])
@@ -364,12 +540,15 @@ def test_interrupted_seal_retains_claim_and_failure(
         real._run_claimed_fit(tmp_path, authorization, synthetic_fixture=True)
 
 
-@pytest.mark.parametrize("name", ["pipeline.joblib", "manifest.json"])
+@pytest.mark.parametrize("name", ["pipeline.joblib", "manifest.json", "success.json"])
+@pytest.mark.parametrize("production_fixture", [False, True])
 def test_claimed_fit_rejects_tampered_seal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, production_fixture: bool
 ) -> None:
     authorization, _ = synthetic_approval(tmp_path, monkeypatch)
-    real._run_claimed_fit(tmp_path, authorization, synthetic_fixture=True)
+    real._run_claimed_fit(
+        tmp_path, authorization, synthetic_fixture=True, production_fixture=production_fixture
+    )
     output = tmp_path / OUTPUT_DIRECTORY
     with (output / name).open("ab") as handle:
         handle.write(b"tamper")

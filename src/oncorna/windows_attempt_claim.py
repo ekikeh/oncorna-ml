@@ -220,3 +220,85 @@ def create_and_verify_claim(path: Path, payload: bytes) -> None:
             _free_descriptor(kernel, expected_sd)
     if held_identity != _path_identity(kernel, path):
         raise ValueError("Windows attempt-claim path identity changed")
+
+
+def verify_existing_claim(path: Path, payload: bytes) -> None:
+    """Recheck an existing claim's bytes, file identity and restrictive DACL."""
+    if os.name != "nt" or not path.is_absolute() or not payload:
+        raise PermissionError("Windows claim verification requires an absolute path")
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    sddl = f"D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;{_user_sid()})"
+    convert = advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW
+    convert.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_void_p,
+    ]
+    convert.restype = wintypes.BOOL
+    expected_sd = ctypes.c_void_p()
+    if not convert(sddl, 1, ctypes.byref(expected_sd), None):
+        raise ctypes.WinError(ctypes.get_last_error())
+    handle = None
+    try:
+        expected_dacl = _dacl_string(expected_sd)
+        open_file = kernel.CreateFileW
+        open_file.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        open_file.restype = wintypes.HANDLE
+        handle = open_file(str(path), 0x80020000, 0, None, 3, 0x00200080, None)
+        if handle == ctypes.c_void_p(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        read = kernel.ReadFile
+        read.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p,
+        ]
+        read.restype = wintypes.BOOL
+        observed = ctypes.create_string_buffer(len(payload) + 1)
+        count = wintypes.DWORD()
+        if not read(handle, observed, len(observed), ctypes.byref(count), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if count.value != len(payload) or observed.raw[: count.value] != payload:
+            raise ValueError("Windows attempt-claim contents differ")
+        get_security = advapi.GetSecurityInfo
+        get_security.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        get_security.restype = wintypes.DWORD
+        actual_sd = ctypes.c_void_p()
+        result = get_security(handle, 1, 4, None, None, None, None, ctypes.byref(actual_sd))
+        if result:
+            raise OSError(result, "Cannot read Windows attempt-claim ACL")
+        try:
+            if _dacl_string(actual_sd) != expected_dacl:
+                raise PermissionError("Windows attempt-claim ACL differs")
+        finally:
+            _free_descriptor(kernel, actual_sd)
+        held_identity = _file_identity(kernel, handle)
+    finally:
+        try:
+            if handle is not None and handle != ctypes.c_void_p(-1).value:
+                _close_handle(kernel, handle)
+        finally:
+            _free_descriptor(kernel, expected_sd)
+    if held_identity != _path_identity(kernel, path):
+        raise ValueError("Windows attempt-claim path identity changed")

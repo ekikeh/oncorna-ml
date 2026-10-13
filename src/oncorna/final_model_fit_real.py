@@ -1,10 +1,11 @@
-"""Metadata-only real fitting preparation. No real fitting entry point is enabled."""
+"""Metadata-bound real fitting with a separate local authorization and claim."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import os
+import stat
 import subprocess
 from collections import Counter
 from dataclasses import dataclass
@@ -201,7 +202,7 @@ def _claim_record(prepared: VerifiedPreparation) -> dict[str, str]:
     }
 
 
-def verify_claimed_synthetic_context(
+def verify_claimed_fit_context(
     root: Path,
     output: Path,
     inputs: FitInputs,
@@ -212,18 +213,29 @@ def verify_claimed_synthetic_context(
     config_sha256: str,
     split_sha256: str,
     expression_sha256: str,
-) -> None:
-    """Reconcile a synthetic claim independently of caller-supplied callbacks."""
+    *,
+    scope: str,
+) -> tuple[tuple[int, int, int, int, int], ...]:
+    """Reconcile an existing claim independently of caller-supplied callbacks."""
     root = root.resolve(strict=True)
     project_data = Path(__file__).resolve().parents[2] / "data"
-    if root == Path(__file__).resolve().parents[
-        2
-    ] or inputs.expression_path.resolve().is_relative_to(project_data.resolve()):
-        raise AuthorizationError("Real final-model fitting remains disabled")
+    project_root = Path(__file__).resolve().parents[2]
+    if scope == "production":
+        if root != project_root:
+            raise AuthorizationError("Production fitting requires its reviewed checkout")
+    elif scope in {"claimed_synthetic", "production_fixture"}:
+        if (
+            root == project_root
+            or inputs.expression_path.resolve().is_relative_to(project_data.resolve())
+            or any(not item.startswith("SYN-") for pair in inputs.fit_pairs for item in pair)
+        ):
+            raise AuthorizationError("Synthetic fitting cannot use the real project")
+    else:
+        raise AuthorizationError("Unsupported claimed fitting scope")
     fixed = root / AUTHORIZATION_PATH
     marker = root / ATTEMPT_PATH
     if not marker.is_file():
-        raise AuthorizationError("Synthetic fitting attempt claim is missing")
+        raise AuthorizationError("Fitting attempt claim is missing")
     if (
         output != root / OUTPUT_DIRECTORY
         or output.parent.resolve(strict=True) != output.parent
@@ -233,7 +245,11 @@ def verify_claimed_synthetic_context(
         or marker.resolve(strict=True) != marker
         or _revision(root) != revision
     ):
-        raise AuthorizationError("Synthetic fitting paths or revision differ")
+        raise AuthorizationError("Fitting paths or revision differ")
+    expression = root / FIT_EXPRESSION_PATH
+    if expression.resolve(strict=True) != expression:
+        raise AuthorizationError("Fitting-only expression path is redirected")
+    stamps = tuple(_stamp(path.stat()) for path in (fixed, marker, expression))
     raw = fixed.read_bytes()
     if hashlib.sha256(raw).hexdigest() != authorization_sha256:
         raise AuthorizationError("Fitting authorization checksum differs")
@@ -241,12 +257,11 @@ def verify_claimed_synthetic_context(
     binding = derive_real_fit_binding(root)
     if (
         binding.inputs != inputs
-        or any(not item.startswith("SYN-") for pair in inputs.fit_pairs for item in pair)
         or binding.config_sha256 != config_sha256
         or binding.split_sha256 != split_sha256
         or binding.expression_sha256 != expression_sha256
     ):
-        raise AuthorizationError("Synthetic fitting binding differs")
+        raise AuthorizationError("Fitting binding differs")
     expected = expected_authorization(
         root,
         revision=revision,
@@ -267,8 +282,65 @@ def verify_claimed_synthetic_context(
     claim_bytes = (
         json.dumps(_claim_record(prepared), sort_keys=True, separators=(",", ":")) + "\n"
     ).encode("utf-8")
-    if marker.read_bytes() != claim_bytes:
-        raise AuthorizationError("Synthetic attempt claim differs from authorization")
+    if scope == "production":
+        if (
+            config_sha256 != CONFIG_SHA256
+            or split_sha256 != SPLIT_SHA256
+            or expression_sha256 != FIT_EXPRESSION_SHA256
+            or len(inputs.fit_pairs) != 675
+            or binding.test_count != 169
+            or len(inputs.gene_ids) != 20530
+        ):
+            raise AuthorizationError("Production fitting differs from frozen population")
+    _verify_existing_claim(marker, claim_bytes)
+    if (
+        tuple(_stamp(path.stat()) for path in (fixed, marker, expression)) != stamps
+        or sha256_file(expression) != expression_sha256
+    ):
+        raise AuthorizationError("Fitting evidence changed during claim verification")
+    return stamps
+
+
+def verify_claimed_synthetic_context(
+    root: Path,
+    output: Path,
+    inputs: FitInputs,
+    authorization_sha256: str,
+    attempt_id: str,
+    approval_reference: str,
+    revision: str,
+    config_sha256: str,
+    split_sha256: str,
+    expression_sha256: str,
+) -> None:
+    """Retain the synthetic-only interface for existing fixture checks."""
+    verify_claimed_fit_context(
+        root,
+        output,
+        inputs,
+        authorization_sha256,
+        attempt_id,
+        approval_reference,
+        revision,
+        config_sha256,
+        split_sha256,
+        expression_sha256,
+        scope="claimed_synthetic",
+    )
+
+
+def _verify_existing_claim(marker: Path, payload: bytes) -> None:
+    """Check claim bytes, identity and permissions without recreating it."""
+    if os.name == "nt":
+        from oncorna.windows_attempt_claim import verify_existing_claim
+
+        verify_existing_claim(marker, payload)
+    else:
+        before = _stamp(marker.stat())
+        if stat.S_IMODE(marker.stat().st_mode) != 0o600 or marker.read_bytes() != payload:
+            raise AuthorizationError("Fitting attempt claim differs or is unprotected")
+        if _stamp(marker.stat()) != before:
+            raise AuthorizationError("Fitting attempt claim changed during verification")
 
 
 def claim_real_fit_attempt(root: Path, authorization_path: Path) -> VerifiedPreparation:
@@ -312,19 +384,32 @@ def _verified_source_handle(
 
 
 def _run_claimed_fit(
-    root: Path, authorization_path: Path | None, *, synthetic_fixture: bool
+    root: Path,
+    authorization_path: Path | None,
+    *,
+    synthetic_fixture: bool,
+    production_fixture: bool = False,
 ) -> dict[str, Any]:
-    """Connect claim, verified inputs and common seal; real execution stays locked."""
-    if not synthetic_fixture:
-        raise AuthorizationError(
-            "Real final-model fitting remains disabled pending separate approval"
-        )
+    """Connect a verified claim to a distinct fitting seal scope."""
+    if production_fixture and not synthetic_fixture:
+        raise AuthorizationError("Production fixture requires synthetic-only inputs")
+    scope = (
+        "production_fixture"
+        if production_fixture
+        else "claimed_synthetic"
+        if synthetic_fixture
+        else "production"
+    )
     root = root.resolve(strict=True)
     if synthetic_fixture and root == Path(__file__).resolve().parents[2]:
         raise PermissionError("Synthetic fitting cannot use the real project checkout")
+    if not synthetic_fixture and root != Path(__file__).resolve().parents[2]:
+        raise AuthorizationError("Production fitting requires its reviewed checkout")
     fixed = root / AUTHORIZATION_PATH
     if authorization_path is None:
         authorization_path = fixed
+    if not fixed.is_file():
+        raise AuthorizationError("Real fitting is disabled without explicit authorization")
     prepared = verify_real_fit_preparation(root, authorization_path)
     inputs = prepared.binding.inputs
     if synthetic_fixture and (
@@ -384,6 +469,8 @@ def _run_claimed_fit(
                 "model_parameters": claimed.authorization["model_parameters"],
                 "attempt_id": claimed.authorization["attempt_id"],
                 "authorization_reference": claimed.authorization["approval_reference"],
+                "authorization_sha256": claimed.authorization_sha256,
+                "scope": scope,
                 "fit_count": len(inputs.fit_pairs),
                 "original_gene_count": len(inputs.gene_ids),
             }
@@ -411,7 +498,7 @@ def _run_claimed_fit(
             source_revision=claimed.revision,
             attempt_id=claimed.authorization["attempt_id"],
             authorization_reference=claimed.authorization["approval_reference"],
-            execution_scope="claimed_synthetic",
+            execution_scope=scope,
             authorization_sha256=claimed.authorization_sha256,
             claimed_root=root,
             checkpoint=checkpoint,

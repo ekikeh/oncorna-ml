@@ -1,4 +1,4 @@
-"""Sealed fitting-only stage. Real execution remains unconditionally disabled."""
+"""Sealed fitting-only stage with separately authorized production scope."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import sklearn
+import yaml
 from sklearn.exceptions import ConvergenceWarning
 
 from oncorna.final_fit_export import sequence_digest
@@ -208,7 +209,7 @@ def verify_real_fit_authorization(root: Path, authorization_path: Path) -> str:
 
 
 def run_real_fit(root: Path, authorization_path: Path | None = None) -> dict[str, Any]:
-    """F25 public entry point; the real branch remains unconditionally disabled."""
+    """Require a revision-bound approval and exclusive claim before fitting."""
     from oncorna.final_model_fit_real import _run_claimed_fit
 
     return _run_claimed_fit(root, authorization_path, synthetic_fixture=False)
@@ -334,7 +335,7 @@ def _fit_and_seal(
     checkpoint: Callable[[str], None],
     validate_manifest: Callable[[dict[str, Any]], None],
 ) -> dict[str, Any]:
-    """Fit synthetic inputs or an independently checked synthetic claimed fixture."""
+    """Fit only under a scope whose boundary is independently checked here."""
     if execution_scope == "synthetic":
         project_data = Path(__file__).resolve().parents[2] / "data"
         if (
@@ -349,17 +350,24 @@ def _fit_and_seal(
         ):
             raise AuthorizationError("Synthetic fitting cannot claim production output or approval")
         _validate_inputs(inputs, config, artifact_sha256)
-    elif execution_scope == "claimed_synthetic":
+    elif execution_scope in {"claimed_synthetic", "production_fixture", "production"}:
         if claimed_root is None or not _sha(authorization_sha256):
-            raise AuthorizationError("A verified synthetic claim is required")
+            raise AuthorizationError("A verified fitting claim is required")
+        trusted_config = yaml.safe_load((claimed_root / "configs/final_test_v1.yaml").read_bytes())
+        if config != trusted_config:
+            raise AuthorizationError("Caller-supplied fitting configuration differs")
+        validate_protocol(config, synthetic_fixture=execution_scope != "production")
     else:
-        raise AuthorizationError("Real fitting remains disabled pending separate approval")
+        raise AuthorizationError("Unsupported fitting execution scope")
+
+    evidence_stamps: tuple[tuple[int, int, int, int, int], ...] | None = None
 
     def checked(stage: str) -> None:
-        if execution_scope == "claimed_synthetic":
-            from oncorna.final_model_fit_real import verify_claimed_synthetic_context
+        nonlocal evidence_stamps
+        if execution_scope in {"claimed_synthetic", "production_fixture", "production"}:
+            from oncorna.final_model_fit_real import verify_claimed_fit_context
 
-            verify_claimed_synthetic_context(
+            observed_stamps = verify_claimed_fit_context(
                 claimed_root,
                 output,
                 inputs,
@@ -370,7 +378,12 @@ def _fit_and_seal(
                 config_sha256,
                 split_sha256,
                 artifact_sha256,
+                scope=execution_scope,
             )
+            if evidence_stamps is None:
+                evidence_stamps = observed_stamps
+            elif observed_stamps != evidence_stamps:
+                raise AuthorizationError("Claimed fitting evidence identity changed")
             approved = np.load(inputs.expression_path, allow_pickle=False)
             if (
                 values.dtype != np.dtype("<f8")
@@ -557,7 +570,8 @@ def verify_sealed_fit(
     if (
         manifest.get("version") != VERSION
         or set(manifest) != MANIFEST_FIELDS
-        or manifest.get("scope") not in {"synthetic", "claimed_synthetic"}
+        or manifest.get("scope")
+        not in {"synthetic", "claimed_synthetic", "production_fixture", "production"}
         or manifest.get("class_order") != list(LABELS)
         or manifest.get("label_column") != "true_label"
         or manifest.get("full_source_hash_verified") is not False
@@ -585,7 +599,7 @@ def verify_sealed_fit(
             raise ValueError("Claimed seal lacks authorization checksum")
         from oncorna.final_model_fit_real import (
             derive_real_fit_binding,
-            verify_claimed_synthetic_context,
+            verify_claimed_fit_context,
         )
 
         root = output.parents[2]
@@ -599,7 +613,7 @@ def verify_sealed_fit(
             or manifest["original_gene_count"] != len(binding.inputs.gene_ids)
         ):
             raise ValueError("Claimed fitting manifest differs from frozen binding")
-        verify_claimed_synthetic_context(
+        verify_claimed_fit_context(
             root,
             output,
             binding.inputs,
@@ -610,6 +624,7 @@ def verify_sealed_fit(
             manifest["config_sha256"],
             manifest["split_sha256"],
             manifest["fit_expression_sha256"],
+            scope=manifest["scope"],
         )
     frozen_parameters = {
         "expression_gt": 1.0,

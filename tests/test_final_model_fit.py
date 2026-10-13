@@ -268,8 +268,10 @@ def test_prior_output_or_claim_blocks_authorization(tmp_path: Path) -> None:
         fit_module.verify_real_fit_authorization(tmp_path, auth)
 
 
-def test_real_fit_and_final_test_remain_locked(tmp_path: Path) -> None:
-    with pytest.raises(AuthorizationError, match="disabled"):
+def test_real_fit_requires_reviewed_checkout_and_final_test_remains_locked(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(AuthorizationError, match="reviewed checkout"):
         run_real_fit(tmp_path)
     config_path = Path(__file__).resolve().parents[1] / "configs/final_test_v1.yaml"
     with pytest.raises(AuthorizationError):
