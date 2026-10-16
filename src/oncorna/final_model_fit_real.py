@@ -215,6 +215,7 @@ def verify_claimed_fit_context(
     expression_sha256: str,
     *,
     scope: str,
+    allow_historical_revision: bool = False,
 ) -> tuple[tuple[int, int, int, int, int], ...]:
     """Reconcile an existing claim independently of caller-supplied callbacks."""
     root = root.resolve(strict=True)
@@ -243,7 +244,7 @@ def verify_claimed_fit_context(
         or fixed.resolve(strict=True) != fixed
         or marker.parent.resolve(strict=True) != marker.parent
         or marker.resolve(strict=True) != marker
-        or _revision(root) != revision
+        or (not allow_historical_revision and _revision(root) != revision)
     ):
         raise AuthorizationError("Fitting paths or revision differ")
     expression = root / FIT_EXPRESSION_PATH

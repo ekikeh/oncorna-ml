@@ -541,7 +541,11 @@ def _fit_and_seal(
 
 
 def verify_sealed_fit(
-    output: Path, expected: dict[str, Any] | None = None, *, completed: bool = True
+    output: Path,
+    expected: dict[str, Any] | None = None,
+    *,
+    completed: bool = True,
+    allow_historical_revision: bool = False,
 ) -> dict[str, Any]:
     """Check local artifact consistency without deserializing joblib bytes.
 
@@ -632,6 +636,7 @@ def verify_sealed_fit(
             manifest["split_sha256"],
             manifest["fit_expression_sha256"],
             scope=manifest["scope"],
+            allow_historical_revision=allow_historical_revision,
         )
     frozen_parameters = {
         "expression_gt": 1.0,

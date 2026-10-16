@@ -45,7 +45,15 @@ FIT_COUNTS = {
     "HER2-enriched": 54,
     "Normal-like": 18,
 }
-STATES = ("reserved", "fitting", "fitted", "test_access_started", "completed", "failed")
+STATES = (
+    "reserved",
+    "fitting",
+    "fitted",
+    "test_access_started",
+    "predictions_sealed",
+    "completed",
+    "failed",
+)
 TEST_CONTAINING_INPUTS = frozenset({"all_gene_expression", "source_expression", "cohort"})
 FIT_EXPRESSION_PATH = Path("data/processed/final_fit_v1/fit_expression.npy")
 FIT_EXPRESSION_MANIFEST_PATH = Path("data/processed/final_fit_v1/manifest.json")
@@ -87,9 +95,10 @@ class Source(Protocol):
     def load_fit(self, snapshot: Snapshot) -> FitData: ...
     def load_test_expression(self, snapshot: Snapshot) -> TestData: ...
     def load_test_labels(self, snapshot: Snapshot) -> np.ndarray: ...
-    def note_predictions_saved(self) -> None: ...
+    def note_predictions_saved(self, output: Path | None = None) -> None: ...
     def begin_test_access(self) -> None: ...
     def verify_full_provenance(self, snapshot: Snapshot) -> Snapshot: ...
+    def verify_label_provenance(self, snapshot: Snapshot) -> Snapshot: ...
 
 
 class SyntheticFixtureSource:
@@ -142,7 +151,7 @@ class SyntheticFixtureSource:
             raise RuntimeError("Synthetic test-expression failure")
         return self.test
 
-    def note_predictions_saved(self) -> None:
+    def note_predictions_saved(self, output: Path | None = None) -> None:
         self.events.append("predictions_saved")
 
     def begin_test_access(self) -> None:
@@ -152,9 +161,18 @@ class SyntheticFixtureSource:
         self.events.append("full_provenance_verified")
         return snapshot
 
+    def verify_label_provenance(self, snapshot: Snapshot) -> Snapshot:
+        if "predictions_saved" not in self.events:
+            raise RuntimeError("Synthetic label provenance requires sealed predictions")
+        self.events.append("label_provenance_verified")
+        return snapshot
+
     def load_test_labels(self, snapshot: Snapshot) -> np.ndarray:
         self.events.append("test_labels_loaded")
-        if not self.events or self.events[-2] != "predictions_saved":
+        if "predictions_saved" not in self.events or self.events[-2] not in {
+            "predictions_saved",
+            "label_provenance_verified",
+        }:
             raise RuntimeError("Synthetic labels accessed before predictions were saved")
         if self.fail_stage == "test_labels":
             raise RuntimeError("Synthetic test-label failure")
@@ -631,6 +649,8 @@ class RealSource:
         self.test_access_started = False
         self.full_provenance_verified = False
         self.predictions_saved = False
+        self.prediction_sha256: str | None = None
+        self.prediction_seal_sha256: str | None = None
 
     def _path(self, config: dict[str, Any], key: str) -> Path:
         return self.root / config["inputs"][key]
@@ -756,7 +776,9 @@ class RealSource:
             raise AuthorizationError("Full-cohort provenance requires the test-access stage")
         expected = self.config["inputs"]["expected_sha256"]
         hashes = dict(snapshot.input_hashes)
-        for key in TEST_CONTAINING_INPUTS:
+        # The cohort file contains held-out labels and is authenticated only
+        # after the prediction seal. Source bytes and schema are checked here.
+        for key in ("source_expression", "all_gene_expression"):
             actual = sha256_file(self._path(self.config, key))
             if actual != expected[key]:
                 raise ValueError(f"Frozen full-cohort checksum mismatch: {key}")
@@ -770,15 +792,6 @@ class RealSource:
             (len(snapshot.sample_ids), len(snapshot.gene_ids)),
             fit_manifest["source_array_data_offset"],
         )
-        split = json.loads(self._path(self.config, "frozen_split").read_text(encoding="utf-8"))
-        provenance = verify_split_provenance(
-            split,
-            cohort_path=self._path(self.config, "cohort"),
-            historical_config_path=self.root / "configs/default.yaml",
-            historical_matrix_path=self.root / "data/processed/ml_expression_matrix.tsv.gz",
-            historical_matrix_manifest_path=self.root / "data/processed/ml_matrix_manifest.json",
-        )
-        hashes["historical_matrix"] = provenance["historical_matrix_sha256"]
         all_values = np.load(
             self._path(self.config, "all_gene_expression"), mmap_mode="r", allow_pickle=False
         )
@@ -788,6 +801,28 @@ class RealSource:
         if not np.array_equal(np.asarray(fit_values), all_values[fit_rows, :]):
             raise ValueError("Fitting-only expression differs from the verified original view")
         self.full_provenance_verified = True
+        return replace(snapshot, input_hashes=hashes)
+
+    def verify_label_provenance(self, snapshot: Snapshot) -> Snapshot:
+        """Open label-containing cohort bytes only after predictions are sealed."""
+        if not self.full_provenance_verified or not self.predictions_saved:
+            raise AuthorizationError("Cohort provenance requires sealed predictions")
+        self._verify_prediction_seal()
+        expected = self.config["inputs"]["expected_sha256"]
+        cohort_sha = sha256_file(self._path(self.config, "cohort"))
+        if cohort_sha != expected["cohort"]:
+            raise ValueError("Frozen cohort checksum mismatch")
+        split = json.loads(self._path(self.config, "frozen_split").read_text(encoding="utf-8"))
+        provenance = verify_split_provenance(
+            split,
+            cohort_path=self._path(self.config, "cohort"),
+            historical_config_path=self.root / "configs/default.yaml",
+            historical_matrix_path=self.root / "data/processed/ml_expression_matrix.tsv.gz",
+            historical_matrix_manifest_path=self.root / "data/processed/ml_matrix_manifest.json",
+        )
+        hashes = dict(snapshot.input_hashes)
+        hashes["cohort"] = cohort_sha
+        hashes["historical_matrix"] = provenance["historical_matrix_sha256"]
         return replace(snapshot, input_hashes=hashes)
 
     def _fit_expression(self, snapshot: Snapshot) -> pd.DataFrame:
@@ -861,6 +896,7 @@ class RealSource:
     def _test_labels_from_cohort(self, pairs: tuple[tuple[str, str], ...]) -> np.ndarray:
         if not self.full_provenance_verified or not self.predictions_saved:
             raise AuthorizationError("Test labels require authorized access and sealed predictions")
+        self._verify_prediction_seal()
         wanted = set(pairs)
         found: dict[tuple[str, str], str] = {}
         with self._path(self.config, "cohort").open(
@@ -901,9 +937,42 @@ class RealSource:
     def load_test_labels(self, snapshot: Snapshot) -> np.ndarray:
         return self._test_labels_from_cohort(snapshot.test_pairs)
 
-    def note_predictions_saved(self) -> None:
+    def _verify_prediction_seal(self) -> None:
+        output = self.root / "data/processed/final_test_v1"
+        seal_path = output / "prediction_seal.json"
+        state_path = output / "run_state.jsonl"
+        entries = [json.loads(line) for line in state_path.read_text().splitlines()]
+        seal = json.loads(seal_path.read_bytes())
+        if (
+            not entries
+            or entries[-1].get("state") != "predictions_sealed"
+            or seal.get("status") != "sealed_before_labels"
+            or seal.get("row_count") != 169
+            or seal.get("class_order") != list(LABELS)
+            or seal.get("prediction_sha256") != sha256_file(output / "test_predictions.tsv")
+            or entries[-1].get("prediction_sha256") != seal["prediction_sha256"]
+            or entries[-1].get("seal_sha256") != sha256_file(seal_path)
+            or (
+                self.prediction_sha256 is not None
+                and seal["prediction_sha256"] != self.prediction_sha256
+            )
+            or (
+                self.prediction_seal_sha256 is not None
+                and sha256_file(seal_path) != self.prediction_seal_sha256
+            )
+        ):
+            raise AuthorizationError("Prediction seal differs before label access")
+
+    def note_predictions_saved(self, output: Path | None = None) -> None:
         if not self.full_provenance_verified:
             raise AuthorizationError("Predictions cannot be sealed before test authorization")
+        if output != self.root / "data/processed/final_test_v1":
+            raise AuthorizationError("Prediction seal output path differs")
+        self._verify_prediction_seal()
+        seal_path = output / "prediction_seal.json"
+        seal = json.loads(seal_path.read_bytes())
+        self.prediction_sha256 = seal["prediction_sha256"]
+        self.prediction_seal_sha256 = sha256_file(seal_path)
         self.predictions_saved = True
 
 
