@@ -39,6 +39,14 @@ from oncorna.final_test import (
     verify_completed_run,
 )
 from oncorna.preprocessing import identity_digest, sha256_file
+from oncorna.synthetic_paths import (
+    PROJECT_DATA,
+    sha256_synthetic_input,
+    synthetic_input_path,
+    synthetic_output_path,
+    verify_synthetic_handle,
+    verify_synthetic_input,
+)
 
 # These identities are the operator-confirmed offline values, fixed in reviewed code.
 # Real execution never accepts replacement values from an authorization file or CLI.
@@ -256,6 +264,12 @@ def _validate_pipeline(pipeline: Any, snapshot: Snapshot, fit_manifest: dict[str
 def verify_completed_test_only(output: Path) -> dict[str, Any]:
     """Independently reconcile the prediction seal with completed run evidence."""
     manifest = verify_completed_run(output)
+    scope = manifest.get("scope")
+    if scope == "one_shot_final_test":
+        if output.resolve() != (PROJECT_DATA / "processed/final_test_v1").resolve():
+            raise ValueError("Production test scope requires the reserved output location")
+    elif scope != "synthetic_test_only":
+        raise ValueError("Unknown test execution scope")
     entries = [json.loads(line) for line in (output / "run_state.jsonl").read_text().splitlines()]
     if (
         [entry["state"] for entry in entries]
@@ -277,6 +291,7 @@ def verify_completed_test_only(output: Path) -> dict[str, Any]:
         seal
         != {
             "status": "sealed_before_labels",
+            "scope": scope,
             **binding,
             "test_identity_sha256": identity_sha,
             "prediction_sha256": prediction_sha,
@@ -403,6 +418,9 @@ def execute_test_only(
             raise AuthorizationError("Production attempt ID differs from approved claim")
     elif type(source) not in (SyntheticFixtureSource, SyntheticFileSource):
         raise AuthorizationError("Only the fixed real source or synthetic fixture is accepted")
+    else:
+        synthetic_output_path(output)
+        model_identity = synthetic_input_path(pipeline_path)
     if attempt_id is None:
         if type(source) is RealSource:
             raise AuthorizationError("Production test attempt ID is required")
@@ -426,14 +444,32 @@ def execute_test_only(
         stage = "test_access_started"
         source.begin_test_access()
         snapshot = source.verify_full_provenance(snapshot)
-        if sha256_file(pipeline_path) != model_sha256:
-            raise ValueError("Pipeline changed before deserialization")
-        pipeline = (
-            joblib.load(pipeline_path)
+        current_model_sha = (
+            sha256_file(pipeline_path)
             if type(source) is RealSource
-            else (synthetic_model_loader or joblib.load)(pipeline_path)
+            else sha256_synthetic_input(pipeline_path, model_identity)
         )
-        if sha256_file(pipeline_path) != model_sha256:
+        if current_model_sha != model_sha256:
+            raise ValueError("Pipeline changed before deserialization")
+        if type(source) is RealSource:
+            pipeline = joblib.load(pipeline_path)
+        else:
+            verify_synthetic_input(pipeline_path, model_identity)
+            with pipeline_path.open("rb") as handle:
+                verify_synthetic_handle(handle, model_identity)
+                verify_synthetic_input(pipeline_path, model_identity)
+                pipeline = (
+                    synthetic_model_loader(pipeline_path)
+                    if synthetic_model_loader is not None
+                    else joblib.load(handle)
+                )
+            verify_synthetic_input(pipeline_path, model_identity)
+        current_model_sha = (
+            sha256_file(pipeline_path)
+            if type(source) is RealSource
+            else sha256_synthetic_input(pipeline_path, model_identity)
+        )
+        if current_model_sha != model_sha256:
             raise ValueError("Pipeline changed during deserialization")
         classifier = _validate_pipeline(pipeline, snapshot, fit_manifest)
         test = source.load_test_expression(snapshot)
@@ -480,6 +516,7 @@ def execute_test_only(
         test_identity_sha = identity_digest(snapshot.test_pairs)
         seal = {
             "status": "sealed_before_labels",
+            "scope": "one_shot_final_test" if type(source) is RealSource else "synthetic_test_only",
             "attempt_id": attempt_id,
             "authorization_sha256": authorization_sha256,
             "source_revision": source_revision,
@@ -536,7 +573,7 @@ def execute_test_only(
         )
         manifest = {
             "version": "final_test_only_v1",
-            "scope": "one_shot_final_test",
+            "scope": seal["scope"],
             "source_revision": source_revision,
             "attempt_id": attempt_id,
             "authorization_sha256": authorization_sha256,

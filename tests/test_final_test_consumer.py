@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import uuid
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import pytest
 import yaml
 from test_final_test import synthetic_config, synthetic_source
 
+import oncorna.final_test as final_test
 import oncorna.final_test_consumer as consumer
 from oncorna.final_fit_export import inspect_npy_header_handle
 from oncorna.final_test import (
@@ -33,6 +35,12 @@ from oncorna.final_test_consumer import (
 )
 from oncorna.modeling import make_pipeline
 from oncorna.preprocessing import sha256_file
+from oncorna.synthetic_paths import (
+    PROJECT_DATA,
+    synthetic_input_path,
+    synthetic_output_path,
+    verify_synthetic_input,
+)
 
 
 def prepared(tmp_path: Path):
@@ -131,6 +139,174 @@ def test_file_backed_synthetic_labels_open_only_after_seal(tmp_path: Path):
     assert source.events.index("label_provenance_verified") < source.events.index(
         "label_file_opened"
     )
+
+
+@pytest.mark.parametrize(
+    "reserved_name",
+    [
+        "final_test_v1",
+        "final_test_v1_authorization.json",
+        "final_test_v1_attempt.json",
+    ],
+)
+def test_synthetic_cannot_reserve_real_test_output(tmp_path: Path, monkeypatch, reserved_name: str):
+    source, config, model, fit_manifest = prepared(tmp_path)
+    reserved = PROJECT_DATA / "processed" / reserved_name
+    assert not reserved.exists()
+    monkeypatch.setattr(
+        consumer, "RunState", lambda *_args, **_kwargs: pytest.fail("mkdir reached")
+    )
+    with pytest.raises(ValueError, match="protected production data"):
+        execute_test_only(
+            source,
+            config,
+            reserved,
+            model,
+            fit_manifest,
+            authorization_sha256="synthetic",
+            model_sha256=sha256_file(model),
+            source_revision="synthetic",
+        )
+    assert not reserved.exists()
+
+
+def test_synthetic_manifest_and_seal_have_distinct_scope(tmp_path: Path):
+    manifest, _ = consume(tmp_path)
+    seal = json.loads((tmp_path / "result/prediction_seal.json").read_text())
+    assert manifest["scope"] == seal["scope"] == "synthetic_test_only"
+    assert verify_completed_test_only(tmp_path / "result")["scope"] == "synthetic_test_only"
+
+
+def test_synthetic_paths_reject_case_variants_before_open(tmp_path: Path, monkeypatch):
+    protected = tmp_path / "data"
+    location = protected / "processed"
+    location.mkdir(parents=True)
+    candidate = location / "synthetic_labels.tsv"
+    candidate.write_text("synthetic", encoding="utf-8")
+    upper = tmp_path / "DATA/PROCESSED/synthetic_labels.tsv"
+    if os.name == "nt":
+        assert upper.samefile(candidate)
+    opened = []
+    original_open = Path.open
+
+    def watched_open(path, *args, **kwargs):
+        if path.name == candidate.name:
+            opened.append(path)
+            pytest.fail("Protected candidate opened")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", watched_open)
+    for path in (candidate, upper):
+        with pytest.raises(ValueError, match="protected production data"):
+            synthetic_input_path(path, protected_data=protected)
+    assert opened == []
+
+
+def test_file_source_rejects_protected_label_before_open(tmp_path: Path, monkeypatch):
+    fixture = synthetic_source()
+    protected = tmp_path / "data"
+    location = protected / "processed"
+    location.mkdir(parents=True)
+    candidate = location / "labels.tsv"
+    candidate.write_text("synthetic", encoding="utf-8")
+    original_check = final_test.synthetic_input_path
+    monkeypatch.setattr(
+        final_test,
+        "synthetic_input_path",
+        lambda path: original_check(path, protected_data=protected),
+    )
+    monkeypatch.setattr(Path, "open", lambda *_args, **_kwargs: pytest.fail("opened"))
+    with pytest.raises(ValueError, match="protected production data"):
+        SyntheticFileSource(fixture.fit, fixture.test, candidate)
+
+
+def test_synthetic_alias_and_changed_path_are_rejected(tmp_path: Path):
+    protected = tmp_path / "data"
+    protected.mkdir()
+    target = protected / "protected.tsv"
+    target.write_text("synthetic", encoding="utf-8")
+    alias = tmp_path / "alias.tsv"
+    directory_alias = tmp_path / "data_alias"
+    try:
+        alias.symlink_to(target)
+        directory_alias.symlink_to(protected, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("File symlinks require privileges on this Windows host")
+    with pytest.raises(ValueError, match="symlink|protected"):
+        synthetic_input_path(alias, protected_data=protected)
+    with pytest.raises(ValueError, match="symlink|protected"):
+        synthetic_output_path(directory_alias / "child", protected_data=protected)
+
+
+def test_synthetic_path_substitution_rejected(tmp_path: Path):
+    protected = tmp_path / "data"
+    protected.mkdir()
+    allowed = tmp_path / "allowed.tsv"
+    allowed.write_text("first", encoding="utf-8")
+    stamp = synthetic_input_path(allowed, protected_data=protected)
+    allowed.unlink()
+    allowed.write_text("second", encoding="utf-8")
+    with pytest.raises(ValueError, match="changed"):
+        verify_synthetic_input(allowed, stamp, protected_data=protected)
+
+
+def test_label_substitution_is_rejected_before_open(tmp_path: Path, monkeypatch):
+    fixture, config, model, fit_manifest = prepared(tmp_path)
+    labels = tmp_path / "labels.tsv"
+    labels.write_text("patient_id\tsample_id\ttrue_label\n", encoding="utf-8")
+    source = SyntheticFileSource(fixture.fit, fixture.test, labels)
+    labels.unlink()
+    labels.write_text("replacement", encoding="utf-8")
+    original_open = Path.open
+
+    def watched_open(path, *args, **kwargs):
+        if path == labels:
+            pytest.fail("Changed label path opened")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", watched_open)
+    with pytest.raises(ValueError, match="changed"):
+        execute_test_only(
+            source,
+            config,
+            tmp_path / "result",
+            model,
+            fit_manifest,
+            authorization_sha256="synthetic",
+            model_sha256=sha256_file(model),
+            source_revision="synthetic",
+        )
+    assert "label_file_opened" not in source.events
+
+
+def test_synthetic_model_path_checked_before_hash_or_load(tmp_path: Path, monkeypatch):
+    source, config, model, fit_manifest = prepared(tmp_path)
+    protected = tmp_path / "data"
+    protected.mkdir()
+    candidate = protected / "synthetic.joblib"
+    model.replace(candidate)
+    import oncorna.synthetic_paths as paths
+
+    original_check = paths.synthetic_input_path
+    monkeypatch.setattr(
+        consumer,
+        "synthetic_input_path",
+        lambda path: original_check(path, protected_data=protected),
+    )
+    monkeypatch.setattr(
+        consumer, "RunState", lambda *_args, **_kwargs: pytest.fail("mkdir reached")
+    )
+    with pytest.raises(ValueError, match="protected production data"):
+        execute_test_only(
+            source,
+            config,
+            tmp_path / "result",
+            candidate,
+            fit_manifest,
+            authorization_sha256="synthetic",
+            model_sha256="0" * 64,
+            source_revision="synthetic",
+        )
 
 
 def test_authenticated_source_uses_one_snapshot_and_rejects_changes(tmp_path: Path):

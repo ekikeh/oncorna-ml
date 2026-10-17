@@ -38,6 +38,11 @@ from oncorna.preprocessing import (
     verify_historical_config,
     verify_split_provenance,
 )
+from oncorna.synthetic_paths import (
+    synthetic_input_path,
+    verify_synthetic_handle,
+    verify_synthetic_input,
+)
 
 LABELS = ("Luminal A", "Luminal B", "Basal-like", "HER2-enriched", "Normal-like")
 FIT_COUNTS = {
@@ -190,9 +195,8 @@ class SyntheticFileSource(SyntheticFixtureSource):
 
     def __init__(self, fit: FitData, test: TestData, label_path: Path) -> None:
         super().__init__(fit, test, np.asarray([], dtype=object))
-        if "data/processed" in label_path.as_posix() or "data/raw" in label_path.as_posix():
-            raise ValueError("Synthetic label fixture cannot use production data paths")
         self.label_path = label_path
+        self.label_identity = synthetic_input_path(label_path)
 
     def note_predictions_saved(
         self, output: Path | None = None, snapshot: Snapshot | None = None
@@ -220,8 +224,11 @@ class SyntheticFileSource(SyntheticFixtureSource):
             or "label_provenance_verified" not in self.events
         ):
             raise RuntimeError("Synthetic file labels accessed before predictions were sealed")
-        self.events.append("label_file_opened")
+        verify_synthetic_input(self.label_path, self.label_identity)
         with self.label_path.open("r", encoding="utf-8", newline="") as handle:
+            verify_synthetic_handle(handle, self.label_identity)
+            verify_synthetic_input(self.label_path, self.label_identity)
+            self.events.append("label_file_opened")
             rows = list(csv.DictReader(handle, delimiter="\t"))
         pairs = tuple((row["patient_id"], row["sample_id"]) for row in rows)
         if pairs != snapshot.test_pairs:
