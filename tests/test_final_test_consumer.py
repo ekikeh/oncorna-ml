@@ -8,12 +8,20 @@ import uuid
 from pathlib import Path
 
 import joblib
+import numpy as np
 import pytest
 import yaml
 from test_final_test import synthetic_config, synthetic_source
 
 import oncorna.final_test_consumer as consumer
-from oncorna.final_test import AuthorizationError, RealSource, modeling_parameters
+from oncorna.final_fit_export import inspect_npy_header_handle
+from oncorna.final_test import (
+    AuthorizationError,
+    RealSource,
+    SyntheticFileSource,
+    _authenticated_source_rows,
+    modeling_parameters,
+)
 from oncorna.final_test import TestData as HeldOutData
 from oncorna.final_test_consumer import (
     _claim_payload,
@@ -57,7 +65,7 @@ def consume(tmp_path: Path, source=None, *, loader=joblib.load):
         authorization_sha256="synthetic-authorization",
         model_sha256=sha256_file(path),
         source_revision="synthetic-revision",
-        model_loader=loader,
+        synthetic_model_loader=loader,
     )
     return result, source
 
@@ -90,6 +98,177 @@ def test_prediction_seal_precedes_label_access_and_reuse_is_rejected(tmp_path: P
         consume(tmp_path)
 
 
+def test_file_backed_synthetic_labels_open_only_after_seal(tmp_path: Path):
+    fixture, config, path, fit_manifest = prepared(tmp_path)
+    labels = tmp_path / "synthetic_labels.tsv"
+    labels.write_text(
+        "patient_id\tsample_id\ttrue_label\n"
+        + "".join(
+            f"{patient}\t{sample}\t{label}\n"
+            for patient, sample, label in zip(
+                fixture.test.patient_ids, fixture.test.sample_ids, fixture.test_labels, strict=True
+            )
+        ),
+        encoding="utf-8",
+    )
+    source = SyntheticFileSource(fixture.fit, fixture.test, labels)
+    snapshot = source.preflight(config)
+    with pytest.raises(RuntimeError, match="before predictions"):
+        source.load_test_labels(snapshot)
+    execute_test_only(
+        source,
+        config,
+        tmp_path / "result",
+        path,
+        fit_manifest,
+        authorization_sha256="synthetic-authorization",
+        model_sha256=sha256_file(path),
+        source_revision="synthetic-revision",
+    )
+    assert source.events.index("predictions_sealed_verified") < source.events.index(
+        "label_file_opened"
+    )
+    assert source.events.index("label_provenance_verified") < source.events.index(
+        "label_file_opened"
+    )
+
+
+def test_authenticated_source_uses_one_snapshot_and_rejects_changes(tmp_path: Path):
+    fixture = synthetic_source()
+    snapshot = fixture.preflight(synthetic_config())
+    source = tmp_path / "source.npy"
+    fit = tmp_path / "fit.npy"
+    values = np.vstack((fixture.fit.X.to_numpy(), fixture.test.X.to_numpy()))
+    np.save(source, values)
+    np.save(fit, fixture.fit.X.to_numpy())
+    with source.open("rb") as handle:
+        offset = inspect_npy_header_handle(handle, values.shape).data_offset
+    selected, stamp = _authenticated_source_rows(source, fit, snapshot, sha256_file(source), offset)
+    assert np.array_equal(selected, fixture.test.X.to_numpy())
+    assert not selected.flags.writeable
+    assert stamp[2] == source.stat().st_size
+    with pytest.raises(ValueError, match="checksum"):
+        _authenticated_source_rows(source, fit, snapshot, "0" * 64, offset)
+    changed = values.copy()
+    changed[0, 0] += 1
+    np.save(source, changed)
+    with pytest.raises(ValueError, match="Fitting-only expression differs"):
+        _authenticated_source_rows(source, fit, snapshot, sha256_file(source), offset)
+
+
+@pytest.mark.parametrize("change", ["in_place", "replacement"])
+def test_authenticated_test_rows_reject_later_source_change(tmp_path: Path, change: str):
+    fixture = synthetic_source()
+    snapshot = fixture.preflight(synthetic_config())
+    original = tmp_path / "source.npy"
+    fit = tmp_path / "fit.npy"
+    values = np.vstack((fixture.fit.X.to_numpy(), fixture.test.X.to_numpy()))
+    np.save(original, values)
+    np.save(fit, fixture.fit.X.to_numpy())
+    with original.open("rb") as handle:
+        offset = inspect_npy_header_handle(handle, values.shape).data_offset
+    digest = sha256_file(original)
+    selected, stamp = _authenticated_source_rows(original, fit, snapshot, digest, offset)
+    source = RealSource(tmp_path)
+    source.config = {"inputs": {"all_gene_expression": "source.npy"}}
+    source.full_provenance_verified = True
+    source.authenticated_test_values = selected
+    source.authenticated_source_stamp = stamp
+    source._require_access = lambda _state: {"attempt_id": "synthetic"}
+    snapshot = snapshot.__class__(
+        snapshot.fit_pairs,
+        snapshot.test_pairs,
+        snapshot.gene_ids,
+        snapshot.sample_ids,
+        {**snapshot.input_hashes, "all_gene_expression": digest},
+        snapshot.historical_config_compatibility,
+    )
+    if change == "in_place":
+        changed = values.copy()
+        changed[-1, -1] += 1
+        np.save(original, changed)
+    else:
+        replacement = tmp_path / "replacement.npy"
+        np.save(replacement, values)
+        original.unlink()
+        replacement.rename(original)
+    with pytest.raises(ValueError, match="Authenticated source changed"):
+        source._test_expression(snapshot)
+
+
+@pytest.mark.parametrize("field", ["attempt_id", "authorization_sha256", "test_identity_sha256"])
+def test_prediction_seal_binding_rejects_reuse_or_identity_change(tmp_path: Path, field: str):
+    consume(tmp_path)
+    seal_path = tmp_path / "result/prediction_seal.json"
+    seal = json.loads(seal_path.read_text(encoding="utf-8"))
+    seal[field] = "different-attempt-or-identity"
+    seal_path.write_text(json.dumps(seal), encoding="utf-8")
+    with pytest.raises(ValueError):
+        verify_completed_test_only(tmp_path / "result")
+
+
+def test_missing_terminal_evidence_and_failed_attempt_reuse_rejected(tmp_path: Path):
+    source, config, path, fit_manifest = prepared(tmp_path)
+    source.verify_full_provenance = lambda _snapshot: (_ for _ in ()).throw(
+        ValueError("synthetic provenance failure")
+    )
+    with pytest.raises(ValueError, match="provenance failure"):
+        execute_test_only(
+            source,
+            config,
+            tmp_path / "failed",
+            path,
+            fit_manifest,
+            authorization_sha256="synthetic",
+            model_sha256=sha256_file(path),
+            source_revision="synthetic",
+        )
+    with pytest.raises(FileExistsError):
+        execute_test_only(
+            source,
+            config,
+            tmp_path / "failed",
+            path,
+            fit_manifest,
+            authorization_sha256="synthetic",
+            model_sha256=sha256_file(path),
+            source_revision="synthetic",
+        )
+    consume(tmp_path)
+    (tmp_path / "result/success.json").unlink()
+    with pytest.raises((FileNotFoundError, ValueError)):
+        verify_completed_test_only(tmp_path / "result")
+
+
+def test_production_rejects_caller_model_loader_before_access(tmp_path: Path):
+    source, config, path, manifest = prepared(tmp_path)
+    with pytest.raises(AuthorizationError, match="injected model loader"):
+        execute_test_only(
+            RealSource(tmp_path),
+            config,
+            tmp_path / "result",
+            path,
+            manifest,
+            authorization_sha256="synthetic",
+            model_sha256=sha256_file(path),
+            source_revision="synthetic",
+            attempt_id="synthetic",
+            synthetic_model_loader=lambda _path: source,
+        )
+    assert not (tmp_path / "result").exists()
+
+
+def test_direct_production_source_access_requires_authorization_and_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(consumer, "__file__", str(tmp_path / "src/oncorna/final_test_consumer.py"))
+    source = RealSource(tmp_path)
+    with pytest.raises(AuthorizationError, match="authorization, claim and output"):
+        source.begin_test_access()
+    with pytest.raises(AuthorizationError, match="authorization, claim and output"):
+        source.load_test_labels(synthetic_source().preflight(synthetic_config()))
+
+
 def test_completed_seal_detects_later_prediction_alteration(tmp_path: Path):
     consume(tmp_path)
     with (tmp_path / "result/test_predictions.tsv").open("a") as handle:
@@ -105,7 +284,7 @@ def test_label_access_before_prediction_seal_is_rejected(tmp_path: Path):
         fixture.load_test_labels(snapshot)
     with pytest.raises(RuntimeError, match="requires sealed predictions"):
         fixture.verify_label_provenance(snapshot)
-    with pytest.raises(AuthorizationError, match="sealed predictions"):
+    with pytest.raises(AuthorizationError, match="reviewed checkout"):
         RealSource(tmp_path).load_test_labels(snapshot)
 
 
@@ -173,7 +352,7 @@ def test_provenance_failure_stops_before_model_load_or_predictions(tmp_path: Pat
             authorization_sha256="synthetic",
             model_sha256=sha256_file(path),
             source_revision="synthetic",
-            model_loader=forbidden,
+            synthetic_model_loader=forbidden,
         )
     assert "test_expression_loaded" not in source.events
     assert "test_labels_loaded" not in source.events
@@ -228,7 +407,7 @@ def test_no_refitting_or_feature_selection_during_consumption(tmp_path: Path, mo
         authorization_sha256="synthetic",
         model_sha256=sha256_file(path),
         source_revision="synthetic",
-        model_loader=lambda _path: pipeline,
+        synthetic_model_loader=lambda _path: pipeline,
     )
 
 
@@ -236,10 +415,10 @@ def test_seal_change_blocks_labels_and_postseal_change_blocks_completion(tmp_pat
     source, config, path, fit_manifest = prepared(tmp_path)
     original = source.note_predictions_saved
 
-    def tamper_before_labels(output):
+    def tamper_before_labels(output, snapshot):
         with (tmp_path / "result/test_predictions.tsv").open("a") as handle:
             handle.write("altered\n")
-        original(output)
+        original(output, snapshot)
 
     source.note_predictions_saved = tamper_before_labels
     with pytest.raises(ValueError, match="Saved prediction count"):

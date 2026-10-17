@@ -17,6 +17,7 @@ import numpy as np
 import yaml
 
 from oncorna.final_fit_real import _create_local_claim
+from oncorna.final_model_fit import CONFIG_SHA256 as FIT_CONFIG_SHA256
 from oncorna.final_model_fit import verify_sealed_fit
 from oncorna.final_model_fit_real import _verify_existing_claim
 from oncorna.final_test import (
@@ -26,6 +27,7 @@ from oncorna.final_test import (
     RunState,
     Snapshot,
     Source,
+    SyntheticFileSource,
     SyntheticFixtureSource,
     _atomic_write_json_new,
     _score,
@@ -36,7 +38,7 @@ from oncorna.final_test import (
     validate_protocol,
     verify_completed_run,
 )
-from oncorna.preprocessing import sha256_file
+from oncorna.preprocessing import identity_digest, sha256_file
 
 # These identities are the operator-confirmed offline values, fixed in reviewed code.
 # Real execution never accepts replacement values from an authorization file or CLI.
@@ -159,6 +161,79 @@ def verify_test_authorization(root: Path, authorization_path: Path) -> tuple[dic
     return expected, hashlib.sha256(raw).hexdigest()
 
 
+def verify_active_test_attempt(root: Path, required_state: str) -> dict[str, str]:
+    """Recheck the production source boundary on every test-containing access."""
+    root = root.resolve(strict=True)
+    if root != Path(__file__).resolve().parents[2] or required_state not in {
+        "test_access_started",
+        "predictions_sealed",
+    }:
+        raise AuthorizationError("Production source access requires the reviewed checkout")
+    fixed_paths = (root / AUTH_PATH, root / CLAIM_PATH, root / OUTPUT_DIR)
+    try:
+        canonical = all(path.resolve(strict=True) == path for path in fixed_paths)
+    except OSError as exc:
+        raise AuthorizationError("Test authorization, claim and output are required") from exc
+    if not canonical:
+        raise AuthorizationError("Test authorization, claim or output path is redirected")
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+    if subprocess.check_output(["git", "status", "--porcelain"], cwd=root, text=True).strip():
+        raise AuthorizationError("Test source access requires a clean reviewed checkout")
+    config_path = root / CONFIG_PATH
+    config_sha = sha256_file(config_path)
+    if config_sha != FIT_CONFIG_SHA256:
+        raise AuthorizationError("Frozen scientific configuration differs")
+    config = yaml.safe_load(config_path.read_bytes())
+    validate_protocol(config)
+    for key, fixed in (
+        ("source_expression", "data/raw/TCGA-BRCA_HiSeqV2.tsv.gz"),
+        ("all_gene_expression", "data/processed/preprocessing_v1/all_gene_expression.npy"),
+        ("cohort", "data/processed/classification_cohort.tsv"),
+    ):
+        path = root / fixed
+        if config["inputs"][key] != fixed or path.resolve(strict=True) != path:
+            raise AuthorizationError(f"Production source path differs: {key}")
+    split_sha = sha256_file(root / config["inputs"]["frozen_split"])
+    if split_sha != config["inputs"]["expected_sha256"]["frozen_split"]:
+        raise AuthorizationError("Frozen split differs before source access")
+    raw = (root / AUTH_PATH).read_bytes()
+    record = json.loads(raw)
+    if type(record) is not dict:
+        raise AuthorizationError("Test approval record differs")
+    expected = expected_test_authorization(
+        root,
+        revision,
+        config_sha,
+        split_sha,
+        record.get("attempt_id"),
+        record.get("approval_reference"),
+    )
+    if record != expected:
+        raise AuthorizationError("Test approval differs before source access")
+    authorization_sha256 = hashlib.sha256(raw).hexdigest()
+    _verify_existing_claim(root / CLAIM_PATH, _claim_payload(expected, authorization_sha256))
+    entries = [
+        json.loads(line)
+        for line in (root / OUTPUT_DIR / "run_state.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    wanted = ["reserved", "test_access_started"]
+    if required_state == "predictions_sealed":
+        wanted.append("predictions_sealed")
+    if (
+        [entry.get("state") for entry in entries] != wanted
+        or [entry.get("sequence") for entry in entries] != list(range(1, len(wanted) + 1))
+        or any(
+            entry.get("attempt_id") != expected["attempt_id"]
+            or entry.get("authorization_sha256") != authorization_sha256
+            or entry.get("source_revision") != revision
+            or entry.get("model_sha256") != MODEL_SHA256
+            for entry in entries
+        )
+    ):
+        raise AuthorizationError("Active test audit state differs from claimed attempt")
+    return {**expected, "authorization_sha256": authorization_sha256}
+
+
 def _validate_pipeline(pipeline: Any, snapshot: Snapshot, fit_manifest: dict[str, Any]) -> Any:
     if list(pipeline.named_steps) != ["gene_filter", "scaler", "classifier"]:
         raise ValueError("Loaded pipeline has unexpected steps")
@@ -191,15 +266,26 @@ def verify_completed_test_only(output: Path) -> dict[str, Any]:
         raise ValueError("Test-only state history is incomplete or contradictory")
     seal = json.loads((output / "prediction_seal.json").read_bytes())
     prediction_sha = sha256_file(output / "test_predictions.tsv")
+    identity_sha = manifest["test_identity_sha256"]
+    binding = {
+        "attempt_id": manifest["attempt_id"],
+        "authorization_sha256": manifest["authorization_sha256"],
+        "source_revision": manifest["source_revision"],
+        "model_sha256": manifest["model_sha256"],
+    }
     if (
         seal
         != {
             "status": "sealed_before_labels",
+            **binding,
+            "test_identity_sha256": identity_sha,
             "prediction_sha256": prediction_sha,
             "row_count": manifest["test_count"],
             "class_order": list(LABELS),
         }
+        or any(any(entry.get(key) != value for key, value in binding.items()) for entry in entries)
         or entries[2]["prediction_sha256"] != prediction_sha
+        or entries[2].get("test_identity_sha256") != identity_sha
         or entries[2]["seal_sha256"] != sha256_file(output / "prediction_seal.json")
         or manifest["sealed_prediction_sha256"] != prediction_sha
         or manifest["output_hashes"]["test_predictions.tsv"] != prediction_sha
@@ -220,6 +306,8 @@ def verify_completed_test_only(output: Path) -> dict[str, Any]:
         len(rows) != manifest["test_count"]
         or len({row["patient_id"] for row in rows}) != len(rows)
         or len({row["sample_id"] for row in rows}) != len(rows)
+        or identity_digest(tuple((row["patient_id"], row["sample_id"]) for row in rows))
+        != identity_sha
     ):
         raise ValueError("Sealed prediction identities differ")
     for row in rows:
@@ -244,7 +332,7 @@ def _verify_claimed_real_context(
     authorization_sha256: str,
     model_sha256: str,
     source_revision: str,
-) -> None:
+) -> dict[str, str]:
     """Guard the shared executor even when it is called outside the CLI."""
     root = source.root.resolve(strict=True)
     if (
@@ -281,6 +369,7 @@ def _verify_claimed_real_context(
     ):
         raise AuthorizationError("Claimed test approval differs from current revision")
     _verify_existing_claim(root / CLAIM_PATH, _claim_payload(expected, authorization_sha256))
+    return expected
 
 
 def execute_test_only(
@@ -293,11 +382,14 @@ def execute_test_only(
     authorization_sha256: str,
     model_sha256: str,
     source_revision: str,
-    model_loader: Callable[[Path], Any] = joblib.load,
+    attempt_id: str | None = None,
+    synthetic_model_loader: Callable[[Path], Any] | None = None,
 ) -> dict[str, Any]:
     """One ordered prediction and score. Caller must have claimed the attempt."""
     if type(source) is RealSource:
-        _verify_claimed_real_context(
+        if synthetic_model_loader is not None:
+            raise AuthorizationError("Production cannot accept an injected model loader")
+        approved = _verify_claimed_real_context(
             source,
             output,
             pipeline_path,
@@ -307,9 +399,21 @@ def execute_test_only(
             model_sha256,
             source_revision,
         )
-    elif type(source) is not SyntheticFixtureSource:
+        if attempt_id != approved["attempt_id"]:
+            raise AuthorizationError("Production attempt ID differs from approved claim")
+    elif type(source) not in (SyntheticFixtureSource, SyntheticFileSource):
         raise AuthorizationError("Only the fixed real source or synthetic fixture is accepted")
-    state = RunState(output)  # Exclusive directory creation is the second one-shot barrier.
+    if attempt_id is None:
+        if type(source) is RealSource:
+            raise AuthorizationError("Production test attempt ID is required")
+        attempt_id = "synthetic-attempt"
+    state = RunState(
+        output,
+        attempt_id=attempt_id,
+        authorization_sha256=authorization_sha256,
+        source_revision=source_revision,
+        model_sha256=model_sha256,
+    )  # Exclusive directory creation is the second one-shot barrier.
     stage = "reserved"
     try:
         snapshot = source.preflight(config)
@@ -324,7 +428,11 @@ def execute_test_only(
         snapshot = source.verify_full_provenance(snapshot)
         if sha256_file(pipeline_path) != model_sha256:
             raise ValueError("Pipeline changed before deserialization")
-        pipeline = model_loader(pipeline_path)
+        pipeline = (
+            joblib.load(pipeline_path)
+            if type(source) is RealSource
+            else (synthetic_model_loader or joblib.load)(pipeline_path)
+        )
         if sha256_file(pipeline_path) != model_sha256:
             raise ValueError("Pipeline changed during deserialization")
         classifier = _validate_pipeline(pipeline, snapshot, fit_manifest)
@@ -369,8 +477,14 @@ def execute_test_only(
         prediction_path = output / "test_predictions.tsv"
         _write_predictions(prediction_path, rows, LABELS)
         prediction_sha = _verify_saved_predictions(prediction_path, rows, LABELS)
+        test_identity_sha = identity_digest(snapshot.test_pairs)
         seal = {
             "status": "sealed_before_labels",
+            "attempt_id": attempt_id,
+            "authorization_sha256": authorization_sha256,
+            "source_revision": source_revision,
+            "model_sha256": model_sha256,
+            "test_identity_sha256": test_identity_sha,
             "prediction_sha256": prediction_sha,
             "row_count": count,
             "class_order": list(LABELS),
@@ -382,9 +496,10 @@ def execute_test_only(
             "predictions_sealed",
             prediction_sha256=prediction_sha,
             seal_sha256=sha256_file(output / "prediction_seal.json"),
+            test_identity_sha256=test_identity_sha,
         )
         stage = "predictions_sealed"
-        source.note_predictions_saved(output)
+        source.note_predictions_saved(output, snapshot)
         if (
             _verify_saved_predictions(prediction_path, rows, LABELS) != prediction_sha
             or sha256_file(output / "prediction_seal.json")
@@ -423,6 +538,7 @@ def execute_test_only(
             "version": "final_test_only_v1",
             "scope": "one_shot_final_test",
             "source_revision": source_revision,
+            "attempt_id": attempt_id,
             "authorization_sha256": authorization_sha256,
             "fit_revision": FIT_REVISION,
             "fit_attempt_id": FIT_ATTEMPT,
@@ -430,6 +546,7 @@ def execute_test_only(
             "fit_manifest_sha256": MANIFEST_SHA256,
             "model_sha256": model_sha256,
             "sealed_prediction_sha256": prediction_sha,
+            "test_identity_sha256": test_identity_sha,
             "input_hashes": snapshot.input_hashes,
             "class_order": list(LABELS),
             "test_count": count,
@@ -505,4 +622,5 @@ def run_real(root: Path, authorization_path: Path) -> dict[str, Any]:
         authorization_sha256=auth_sha,
         model_sha256=MODEL_SHA256,
         source_revision=record["approved_commit"],
+        attempt_id=record["attempt_id"],
     )

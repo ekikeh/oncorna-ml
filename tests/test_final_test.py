@@ -339,17 +339,16 @@ def test_real_adapter_preflight_and_fit_labels_use_only_safe_artifacts(tmp_path:
     fit = source.load_fit(snapshot)
     assert fit.y.tolist() == fixture.fit.y.tolist()
     assert np.array_equal(fit.X.to_numpy(), fixture.fit.X.to_numpy())
-    with pytest.raises(AuthorizationError, match="test-access stage"):
+    with pytest.raises(AuthorizationError, match="reviewed checkout"):
         source.verify_full_provenance(snapshot)
-    with pytest.raises(AuthorizationError, match="test-access stage"):
+    with pytest.raises(AuthorizationError, match="reviewed checkout"):
         source.load_test_expression(snapshot)
-    with pytest.raises(AuthorizationError, match="sealed predictions"):
+    with pytest.raises(AuthorizationError, match="reviewed checkout"):
         source.load_test_labels(snapshot)
-    source.begin_test_access()
-    with pytest.raises(FileNotFoundError):
-        source.verify_full_provenance(snapshot)
+    with pytest.raises(AuthorizationError, match="reviewed checkout"):
+        source.begin_test_access()
     assert not source.full_provenance_verified
-    with pytest.raises(AuthorizationError, match="test-access stage"):
+    with pytest.raises(AuthorizationError, match="reviewed checkout"):
         source.load_test_expression(snapshot)
 
 
