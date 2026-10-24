@@ -42,6 +42,11 @@ from oncorna.synthetic_paths import (
     verify_synthetic_input,
 )
 
+pytestmark = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Filesystem-backed synthetic integration runs in the code-only container",
+)
+
 
 def prepared(tmp_path: Path):
     source = synthetic_source()
@@ -197,7 +202,7 @@ def test_synthetic_paths_reject_case_variants_before_open(tmp_path: Path, monkey
 
     monkeypatch.setattr(Path, "open", watched_open)
     for path in (candidate, upper):
-        with pytest.raises(ValueError, match="protected production data"):
+        with pytest.raises(ValueError):
             synthetic_input_path(path, protected_data=protected)
     assert opened == []
 

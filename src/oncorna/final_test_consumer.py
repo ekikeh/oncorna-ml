@@ -41,6 +41,7 @@ from oncorna.final_test import (
 from oncorna.preprocessing import identity_digest, sha256_file
 from oncorna.synthetic_paths import (
     PROJECT_DATA,
+    require_isolated_synthetic_filesystem,
     sha256_synthetic_input,
     synthetic_input_path,
     synthetic_output_path,
@@ -419,6 +420,7 @@ def execute_test_only(
     elif type(source) not in (SyntheticFixtureSource, SyntheticFileSource):
         raise AuthorizationError("Only the fixed real source or synthetic fixture is accepted")
     else:
+        require_isolated_synthetic_filesystem()
         synthetic_output_path(output)
         model_identity = synthetic_input_path(pipeline_path)
     if attempt_id is None:

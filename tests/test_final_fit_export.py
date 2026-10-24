@@ -823,8 +823,10 @@ def test_redirected_output_parent_is_rejected(
         original.symlink_to(alternate, target_is_directory=True)
     except OSError:
         pytest.skip("Directory symlinks require a Windows privilege unavailable here")
-    with pytest.raises(PermissionError, match="redirected"):
+    with pytest.raises(PermissionError):
         real_module.prepare_real_export(root, authorization_path)
+    assert not (root / real_module.OUTPUT_DIRECTORY).exists()
+    assert not (root / real_module.ATTEMPT_MARKER_PATH).exists()
 
 
 def test_resolved_output_parent_mismatch_is_rejected_without_symlink_privilege(

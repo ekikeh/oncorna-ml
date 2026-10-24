@@ -6,6 +6,7 @@ import copy
 import csv
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -31,6 +32,10 @@ from oncorna.final_test import (
 )
 
 LABELS = ("Luminal A", "Luminal B", "Basal-like", "HER2-enriched", "Normal-like")
+docker_only = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Filesystem-backed synthetic integration runs in the code-only container",
+)
 
 
 def synthetic_config() -> dict:
@@ -236,6 +241,7 @@ def test_config_and_threshold_boundaries() -> None:
         validate_protocol(config, synthetic_fixture=True)
 
 
+@docker_only
 def test_one_shot_state_audit_metrics_probabilities_and_reproducibility(tmp_path: Path) -> None:
     first, source = run_fixture(tmp_path / "first")
     output = tmp_path / "first" / "result"
@@ -315,6 +321,7 @@ def test_one_shot_state_audit_metrics_probabilities_and_reproducibility(tmp_path
     assert final_test_module.verify_completed_run(output) == first
 
 
+@docker_only
 def test_held_out_values_cannot_change_fitted_artifacts(tmp_path: Path) -> None:
     baseline, _ = run_fixture(tmp_path / "baseline")
     changed_source = synthetic_source()
@@ -326,6 +333,7 @@ def test_held_out_values_cannot_change_fitted_artifacts(tmp_path: Path) -> None:
     assert baseline["model_sha256"] == changed["model_sha256"]
 
 
+@docker_only
 def test_real_adapter_preflight_and_fit_labels_use_only_safe_artifacts(tmp_path: Path) -> None:
     config, fixture = synthetic_real_adapter_metadata(tmp_path)
     source = RealSource(tmp_path)
@@ -352,6 +360,7 @@ def test_real_adapter_preflight_and_fit_labels_use_only_safe_artifacts(tmp_path:
         source.load_test_expression(snapshot)
 
 
+@docker_only
 def test_fit_only_artifact_change_is_rejected_before_fitting(tmp_path: Path) -> None:
     config, _ = synthetic_real_adapter_metadata(tmp_path)
     source = RealSource(tmp_path)
@@ -365,6 +374,7 @@ def test_fit_only_artifact_change_is_rejected_before_fitting(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize("interruption", ["before_manifest", "after_manifest"])
+@docker_only
 def test_interrupted_sealing_never_records_completion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interruption: str
 ) -> None:
@@ -390,6 +400,7 @@ def test_interrupted_sealing_never_records_completion(
         run_fixture(tmp_path)
 
 
+@docker_only
 def test_failure_before_test_access_is_preserved(tmp_path: Path) -> None:
     source = synthetic_source(fail_stage="fit_load")
     with pytest.raises(RuntimeError, match="fit-load"):
@@ -403,6 +414,7 @@ def test_failure_before_test_access_is_preserved(tmp_path: Path) -> None:
         run_fixture(tmp_path)
 
 
+@docker_only
 def test_preflight_failure_is_preserved_without_fit_or_test_access(tmp_path: Path) -> None:
     source = synthetic_source(fail_stage="preflight")
     with pytest.raises(RuntimeError, match="preflight"):
@@ -415,6 +427,7 @@ def test_preflight_failure_is_preserved_without_fit_or_test_access(tmp_path: Pat
         run_fixture(tmp_path)
 
 
+@docker_only
 def test_failure_after_test_access_is_preserved(tmp_path: Path) -> None:
     source = synthetic_source(fail_stage="test_labels")
     with pytest.raises(RuntimeError, match="test-label"):

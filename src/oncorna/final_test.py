@@ -39,6 +39,7 @@ from oncorna.preprocessing import (
     verify_split_provenance,
 )
 from oncorna.synthetic_paths import (
+    require_isolated_synthetic_filesystem,
     synthetic_input_path,
     verify_synthetic_handle,
     verify_synthetic_input,
@@ -194,6 +195,7 @@ class SyntheticFileSource(SyntheticFixtureSource):
     """Synthetic label-file fixture with observable, seal-gated file opens."""
 
     def __init__(self, fit: FitData, test: TestData, label_path: Path) -> None:
+        require_isolated_synthetic_filesystem()
         super().__init__(fit, test, np.asarray([], dtype=object))
         self.label_path = label_path
         self.label_identity = synthetic_input_path(label_path)
@@ -201,6 +203,7 @@ class SyntheticFileSource(SyntheticFixtureSource):
     def note_predictions_saved(
         self, output: Path | None = None, snapshot: Snapshot | None = None
     ) -> None:
+        require_isolated_synthetic_filesystem()
         if output is None or snapshot is None:
             raise RuntimeError("Synthetic file labels require a saved prediction seal")
         entries = [
@@ -219,6 +222,7 @@ class SyntheticFileSource(SyntheticFixtureSource):
         super().note_predictions_saved(output, snapshot)
 
     def load_test_labels(self, snapshot: Snapshot) -> np.ndarray:
+        require_isolated_synthetic_filesystem()
         if (
             "predictions_sealed_verified" not in self.events
             or "label_provenance_verified" not in self.events
@@ -481,6 +485,8 @@ def execute_once(
     authorization_sha256: str | None,
 ) -> dict[str, Any]:
     """Execute stages once; only a separately authorized caller may pass a real source."""
+    if type(source) in (SyntheticFixtureSource, SyntheticFileSource):
+        require_isolated_synthetic_filesystem()
     synthetic = type(source) is SyntheticFixtureSource
     validate_protocol(config, synthetic_fixture=synthetic)
     if not synthetic:

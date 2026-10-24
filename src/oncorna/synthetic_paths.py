@@ -11,6 +11,18 @@ PROJECT_DATA = Path(__file__).resolve().parents[2] / "data"
 FileIdentity = tuple[int, int, int, int, int]
 
 
+class SyntheticIsolationError(PermissionError):
+    """Filesystem-backed synthetic execution requires an isolated Linux container."""
+
+
+def require_isolated_synthetic_filesystem() -> None:
+    """Fail before path inspection on the Windows production host."""
+    if os.name == "nt":
+        raise SyntheticIsolationError(
+            "Synthetic filesystem execution is disabled on Windows; use the code-only container"
+        )
+
+
 def _normal(path: Path) -> str:
     return os.path.normcase(os.path.abspath(path))
 
@@ -24,6 +36,7 @@ def _inside(path: Path, root: Path) -> bool:
 
 
 def _canonical(path: Path, *, must_exist: bool, protected_data: Path) -> Path:
+    require_isolated_synthetic_filesystem()
     try:
         resolved = path.resolve(strict=must_exist)
         boundary = protected_data.resolve(strict=True)
@@ -47,6 +60,7 @@ def synthetic_output_path(path: Path, *, protected_data: Path = PROJECT_DATA) ->
 
 
 def _identity(path: Path) -> FileIdentity:
+    require_isolated_synthetic_filesystem()
     info = path.stat()
     if not stat.S_ISREG(info.st_mode) or not info.st_ino or info.st_nlink != 1:
         raise ValueError("Synthetic input is not a unique regular file")
