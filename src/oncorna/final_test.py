@@ -1086,10 +1086,11 @@ class RealSource:
         seal_sha = sha256_file(seal_path)
         expected = {
             "status": "sealed_before_labels",
+            "scope": "one_shot_final_test",
             "attempt_id": approved["attempt_id"],
             "authorization_sha256": approved["authorization_sha256"],
-            "source_revision": approved["source_revision"],
-            "model_sha256": approved["model_sha256"],
+            "source_revision": approved["approved_commit"],
+            "model_sha256": approved["pipeline_sha256"],
             "test_identity_sha256": identity_digest(snapshot.test_pairs),
             "prediction_sha256": prediction_sha,
             "row_count": len(snapshot.test_pairs),

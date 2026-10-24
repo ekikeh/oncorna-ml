@@ -18,10 +18,13 @@ import oncorna.final_test as final_test
 import oncorna.final_test_consumer as consumer
 from oncorna.final_fit_export import inspect_npy_header_handle
 from oncorna.final_test import (
+    LABELS,
     AuthorizationError,
     RealSource,
+    Snapshot,
     SyntheticFileSource,
     _authenticated_source_rows,
+    _write_predictions,
     modeling_parameters,
 )
 from oncorna.final_test import TestData as HeldOutData
@@ -34,7 +37,7 @@ from oncorna.final_test_consumer import (
     verify_test_authorization,
 )
 from oncorna.modeling import make_pipeline
-from oncorna.preprocessing import sha256_file
+from oncorna.preprocessing import identity_digest, sha256_file
 from oncorna.synthetic_paths import (
     PROJECT_DATA,
     synthetic_input_path,
@@ -448,6 +451,189 @@ def test_direct_production_source_access_requires_authorization_and_claim(
         source.begin_test_access()
     with pytest.raises(AuthorizationError, match="authorization, claim and output"):
         source.load_test_labels(synthetic_source().preflight(synthetic_config()))
+
+
+def production_seal_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Use the real source seal verifier with only disposable synthetic files."""
+    root = tmp_path.resolve()
+    output = root / consumer.OUTPUT_DIR
+    output.mkdir(parents=True)
+    cohort = root / "synthetic_cohort.tsv"
+    cohort.write_text("patient_id\tsample_id\tpam50_normalized_label\nSYN-P1\tSYN-S1\tLuminal A\n")
+    source = RealSource(root)
+    source.config = {"inputs": {"cohort": cohort.name}}
+    source.full_provenance_verified = True
+    snapshot = Snapshot((), (("SYN-P1", "SYN-S1"),), (), (), {})
+    approved = expected_test_authorization(
+        root, "a" * 40, "b" * 64, "c" * 64, str(uuid.uuid4()), "SYN-APPROVAL"
+    )
+    approved["authorization_sha256"] = "d" * 64
+
+    def synthetic_approval(checked_root: Path, required_state: str):
+        assert checked_root == root
+        assert required_state == "predictions_sealed"
+        return approved
+
+    monkeypatch.setattr(consumer, "verify_active_test_attempt", synthetic_approval)
+    rows = [
+        {
+            "patient_id": "SYN-P1",
+            "sample_id": "SYN-S1",
+            "predicted_label": "Luminal A",
+            **{
+                f"probability_{label}": value
+                for label, value in zip(LABELS, (0.7, 0.3, 0.0, 0.0, 0.0), strict=True)
+            },
+        }
+    ]
+    prediction_path = output / "test_predictions.tsv"
+    _write_predictions(prediction_path, rows, LABELS)
+    identity_sha = identity_digest(snapshot.test_pairs)
+    seal = {
+        "status": "sealed_before_labels",
+        "scope": "one_shot_final_test",
+        "attempt_id": approved["attempt_id"],
+        "authorization_sha256": approved["authorization_sha256"],
+        "source_revision": approved["approved_commit"],
+        "model_sha256": approved["pipeline_sha256"],
+        "test_identity_sha256": identity_sha,
+        "prediction_sha256": sha256_file(prediction_path),
+        "row_count": 1,
+        "class_order": list(LABELS),
+    }
+    seal_path = output / "prediction_seal.json"
+    seal_path.write_text(json.dumps(seal))
+    entries = [
+        {"sequence": 1, "state": "reserved"},
+        {"sequence": 2, "state": "test_access_started"},
+        {
+            "sequence": 3,
+            "state": "predictions_sealed",
+            "prediction_sha256": seal["prediction_sha256"],
+            "seal_sha256": sha256_file(seal_path),
+            "test_identity_sha256": identity_sha,
+        },
+    ]
+    state_path = output / "run_state.jsonl"
+    state_path.write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+    return source, snapshot, approved, output, cohort, seal, entries
+
+
+def test_production_seal_fixture_passes_before_synthetic_label_open(tmp_path: Path, monkeypatch):
+    source, snapshot, _approved, output, cohort, _seal, _entries = production_seal_fixture(
+        tmp_path, monkeypatch
+    )
+    opened = []
+    original_open = Path.open
+
+    def watch_label_open(path, *args, **kwargs):
+        if path == cohort:
+            opened.append(path)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", watch_label_open)
+    with pytest.raises(AuthorizationError, match="sealed predictions"):
+        source.load_test_labels(snapshot)
+    assert opened == []
+    source.note_predictions_saved(output, snapshot)
+    assert source.predictions_saved
+    assert source.load_test_labels(snapshot).tolist() == ["Luminal A"]
+    assert opened == [cohort]
+    assert not (tmp_path / consumer.AUTH_PATH).exists()
+    assert not (tmp_path / consumer.CLAIM_PATH).exists()
+    with pytest.raises(ValueError, match="terminal completed state"):
+        verify_completed_test_only(output)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "approved_revision",
+        "pipeline_digest",
+        "attempt_id",
+        "authorization_sha256",
+        "missing_scope",
+        "wrong_scope",
+        "seal_attempt_id",
+        "seal_authorization_sha256",
+        "test_identity_digest",
+        "class_order",
+        "unexpected_seal_field",
+        "missing_prediction_sha256",
+        "predicted_label",
+        "probability",
+        "audit_state",
+    ],
+)
+def test_production_seal_fixture_rejects_before_label_open(tmp_path: Path, monkeypatch, change):
+    source, snapshot, approved, output, cohort, seal, entries = production_seal_fixture(
+        tmp_path, monkeypatch
+    )
+    seal_path = output / "prediction_seal.json"
+    prediction_path = output / "test_predictions.tsv"
+    if change == "approved_revision":
+        approved["approved_commit"] = "e" * 40
+    elif change == "pipeline_digest":
+        approved["pipeline_sha256"] = "f" * 64
+    elif change == "attempt_id":
+        approved["attempt_id"] = str(uuid.uuid4())
+    elif change == "authorization_sha256":
+        approved["authorization_sha256"] = "0" * 64
+    elif change in (
+        "missing_scope",
+        "wrong_scope",
+        "seal_attempt_id",
+        "seal_authorization_sha256",
+        "test_identity_digest",
+        "class_order",
+        "unexpected_seal_field",
+        "missing_prediction_sha256",
+    ):
+        if change == "missing_scope":
+            del seal["scope"]
+        elif change == "wrong_scope":
+            seal["scope"] = "synthetic_test_only"
+        elif change == "seal_attempt_id":
+            seal["attempt_id"] = str(uuid.uuid4())
+        elif change == "seal_authorization_sha256":
+            seal["authorization_sha256"] = "0" * 64
+        elif change == "test_identity_digest":
+            seal["test_identity_sha256"] = "0" * 64
+        elif change == "class_order":
+            seal["class_order"] = list(reversed(LABELS))
+        elif change == "unexpected_seal_field":
+            seal["unexpected"] = "SYN-EXTRA"
+        else:
+            del seal["prediction_sha256"]
+        seal_path.write_text(json.dumps(seal))
+        entries[-1]["seal_sha256"] = sha256_file(seal_path)
+    elif change in ("predicted_label", "probability"):
+        original = prediction_path.read_text()
+        altered = (
+            original.replace("SYN-S1\tLuminal A\t", "SYN-S1\tLuminal B\t")
+            if change == "predicted_label"
+            else original.replace("\t0.7\t0.3\t", "\t0.6\t0.4\t")
+        )
+        assert altered != original
+        prediction_path.write_text(altered)
+    else:
+        entries[-1]["state"] = "completed"
+    (output / "run_state.jsonl").write_text("".join(json.dumps(entry) + "\n" for entry in entries))
+    opened = []
+    original_open = Path.open
+
+    def watch_label_open(path, *args, **kwargs):
+        if path == cohort:
+            opened.append(path)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", watch_label_open)
+    with pytest.raises(AuthorizationError, match="Prediction seal differs"):
+        source.note_predictions_saved(output, snapshot)
+    assert not source.predictions_saved
+    with pytest.raises(AuthorizationError):
+        source.load_test_labels(snapshot)
+    assert opened == []
 
 
 def test_completed_seal_detects_later_prediction_alteration(tmp_path: Path):
