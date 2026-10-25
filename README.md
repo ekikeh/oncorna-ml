@@ -3,23 +3,41 @@
 [![CI](https://github.com/ekikeh/oncorna-ml/actions/workflows/ci.yml/badge.svg)](https://github.com/ekikeh/oncorna-ml/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**A reproducible, leakage-aware study of RNA-seq features for breast-cancer PAM50 subtype classification.**
+**TCGA-BRCA expression-based reconstruction of five existing PAM50 subtype labels.**
 
-> **Research/education only.** This project is not a medical device and must not be used for diagnosis, treatment selection, or patient-care decisions.
+> **Research and education only.** This is not a diagnostic, prognostic, treatment-selection, or patient-care tool.
 
-## Status
+## Research question and status
 
-**Data-preparation Phases 1A–1G, training-only Phase 2B cross-validation, and one frozen Phase 2C validation evaluation are implemented.** The workflow acquires public UCSC Xena TCGA-BRCA inputs, defines and quality-checks the approved cohort, creates a processed expression matrix, freezes a patient-level train/validation/test split, and commits a compact demo subset. Phase 2B compares a majority baseline with L2 multinomial logistic regression across four training-only folds; Phase 2C fits the selected model on the 506 training patients and evaluates the frozen 169-patient validation set once. See the [Phase 2B report](reports/phase_2b_training_cv.md) and [Phase 2C report](reports/phase_2c_validation.md). The full cohort, processed matrix, frozen split, fitted model, and patient-level predictions remain local-only. No test evaluation, train-plus-validation refit, differential expression, GSEA, or biological claims have been made.
+Can a regularized model reconstruct existing expression-derived PAM50 calls from TCGA-BRCA gene-expression measurements under a frozen patient-level evaluation? The completed study includes cohort preparation (Phases 1A–1G), four-fold training development CV (Phase 2B), one frozen validation assessment (Phase 2C), a final 675-patient fit, and one independently verified held-out test assessment (Phase 3D). The held-out evaluation is terminal and closed. [Historical reports](reports/README.md) retain what was known at each phase.
 
-## Goal
+The five classes are Luminal A, Luminal B, Basal-like, HER2-enriched, and Normal-like. Their source labels come from `PAM50Call_RNAseq`, itself based on expression. The study measures label reconstruction within one cohort, not independent biological ground truth or clinical utility.
 
-Build an end-to-end, reproducible learning project using public, de-identified breast-cancer data. The primary planned task is multiclass prediction of PAM50 intrinsic subtype. Differential expression and pathway analysis are descriptive/research analyses; a survival analysis is a secondary extension only if endpoints can be harmonized reliably.
+## Data and method
 
-The project prioritizes sound validation over a headline score: patient-level splits, feature selection inside cross-validation, macro-F1 and per-class metrics, a locked test set, uncertainty reporting, and explicit limitations.
+The public UCSC Xena TCGA-BRCA legacy `HiSeqV2` expression matrix and `BRCA_clinicalMatrix` supplied the inputs and labels. Values are `log2(normalized_count + 1)`, **not raw integer counts**. Count-based DESeq2/PyDESeq2 analysis requires a separately documented appropriate raw-count source. [Provenance](docs/data_provenance.md) records source URLs, dates, and checksums.
 
-## Quick start (setup and Phase 1A)
+The [cohort rules](docs/cohort_definition.md) selected one eligible primary tumor sample per patient, yielding 844 patients. The [patient-level frozen split](docs/data_splits.md) was 506 training / 169 validation / 169 test. The approved input schema contained 20,530 genes in source order. The fitted pipeline applied a fitting-population prevalence filter (expression > 1 in at least 20% of patients), standardization, and multinomial L2 logistic regression with `C=1`.
 
-The project targets **Python 3.11**. Recommended for a local machine: install Miniforge, then run from the repository root:
+[Training CV](reports/phase_2b_training_cv.md) used one stratified four-fold split to compare a majority baseline and logistic candidates and select `C`; it was **not nested CV**. The [validation](reports/phase_2c_validation.md) estimator fitted 506 patients and retained 17,613 genes. The final estimator fitted the fixed 675 training-plus-validation patients and retained 17,623 genes before the one-time test. These are separate fits.
+
+## Verified aggregate results
+
+| Evaluation | Macro F1 | Balanced accuracy | Accuracy |
+|---|---:|---:|---:|
+| Training CV (mean fold macro F1; other measures pooled) | 0.7925 | 0.7891 | 0.8814 |
+| Frozen validation | 0.7285 | 0.7288 | 0.8284 |
+| Final held-out test | **0.7934** | **0.7556** | **0.8521** |
+
+Training pooled CV macro F1 is 0.7904, distinct from the mean of four fold scores. The final test correctly classified **144/169** patients; Normal-like recall was **2/5**. See the [aggregate final report](reports/phase_3d_aggregate_results.md) and [model card](docs/model_card.md) for class results and interpretation. No confidence interval, calibration measure, or external-cohort score is claimed.
+
+## Limitations
+
+TCGA-BRCA is one research cohort. Expression-derived labels share signal with expression predictors. Five Normal-like patients in the test make its recall unstable. The upstream Xena normalization history cannot be reconstructed across partitions, and the gene-prevalence threshold arose in earlier cohort-wide QC. An entirely leakage-free end-to-end history is not established. No independent external-cohort validation, clinical calibration, differential expression, GSEA, SHAP, or survival analysis has been completed.
+
+## Quick start: public code and tests
+
+Use Python 3.11. With Miniforge or Mamba, from the repository root:
 
 ```bash
 conda env create -f environment.yml
@@ -27,55 +45,30 @@ conda activate oncorna-ml
 python -m pip install -e ".[dev]"
 python -m pytest
 ruff check .
-python scripts/download_data.py
 ```
 
-If you use Mamba, replace `conda env create` with `mamba env create`. Windows users should use WSL2 for the smoothest bioinformatics tooling experience.
+These checks use repository tests; they do not run the completed 169-patient evaluation. The `pyproject.toml` dependencies are ranges, not a lock of the historical scientific environment. The tracked [CI workflow](.github/workflows/ci.yml) runs lint and tests. [Reproducibility notes](docs/reproducibility.md) distinguish the historical environment, aggregate evidence, and public implementation.
 
-For this Linux workspace, the same environment can be created with `uv`:
+For source acquisition, see [data provenance](docs/data_provenance.md) and `scripts/download_data.py`. Downloading and processing the full cohort is separate from this quick start. The tracked [preview](data/demo/README.md) is **10 real training samples by 100 genes**, selected for table inspection. It is neither synthetic nor representative and cannot be passed to the final fitted model. Its [selection and attribution](docs/demo_dataset.md) are documented.
 
-```bash
-uv python install 3.11
-uv venv --python 3.11 .venv
-uv pip install --python .venv/bin/python -e ".[dev]"
-.venv/bin/python -m pytest
-.venv/bin/ruff check .
-.venv/bin/python scripts/download_data.py
-```
-
-The download retrieves about 63 MiB of source files, writes SHA-256 checksums to `data/MANIFEST.sha256`, and skips existing files on later runs. Add `--force` to replace them. Tests use small mocked responses; they do not fetch the cohort. Full raw files stay local and are not committed.
-
-The tracked demo tables in [`data/demo/`](data/demo/) can be inspected without downloading the full matrix. Regenerating them requires the local approved cohort, processed matrix, retained-gene list, and frozen `split_v1`; see [`docs/demo_dataset.md`](docs/demo_dataset.md) for the reproduction command and prerequisites.
-
-## Selected data and scientific guardrails
-
-- Cohort: TCGA-BRCA from the public UCSC Xena TCGA hub.
-- Expression: `HiSeqV2.gz`, a gene-level, processed legacy TCGA RNA-seq matrix.
-- Clinical/sample metadata and PAM50 label: `BRCA_clinicalMatrix`, including `PAM50Call_RNAseq` where available.
-- The Xena expression values are log2-transformed normalized expression, **not raw integer counts**. Do not use them directly as DESeq2/PyDESeq2 counts. If a later phase includes count-based differential expression, select and document a suitable raw-count source first.
-- Full raw cohort files, the full derived expression matrix, and the local split manifest must **not** be committed. `data/demo/` contains only a small, attributed source-derived preview; it is not a synthetic dataset or a population-representative sample.
-- Demo samples come only from the training partition so validation and test examples stay out of the public preview. The fixed gene subset is for compact table inspection, not biological feature selection.
-- A patient—not an aliquot or sample—is the unit for the frozen split. Future feature selection and tuning must stay inside training folds. PAM50 prediction is label reconstruction, not a claim of discovering new PAM50 biomarkers.
-
-See [`docs/data_provenance.md`](docs/data_provenance.md) for source URLs, checksums, and usage notes; [`docs/data_splits.md`](docs/data_splits.md) for the frozen split; [`docs/demo_dataset.md`](docs/demo_dataset.md) for the demo rules; and the [`project charter`](docs/project_charter.md) and [`model card`](docs/model_card.md) for scope and limitations.
-
-For the training-only experiment, use Python 3.11 and run `python scripts/run_training_cv.py` after preparing the local `preprocessing_v1` artifacts. The versioned [modeling configuration](configs/modeling_v1.yaml) fixes four stratified folds, the gene filter, scaler, and logistic `C` grid. The command writes local-only results to `data/processed/modeling_v1/` and refuses to overwrite them.
+A future Phase 4C may add an invented synthetic demonstration, exact demo dependency pins, and synthetic-only CI checks. These are planned features, not an available reproduction of the frozen test. The fitted model, complete arrays, patient-level predictions, and evaluation authorizations remain local; the [release scope](docs/release_scope.md) explains why the public checkout cannot reproduce the closed held-out assessment.
 
 ## Repository map
 
 ```text
-configs/                   project settings and separate Phase 1G demo settings
-scripts/                   data acquisition, split, and demo-build commands
-data/MANIFEST.sha256       source checksums; no full cohort data
-data/demo/                 compact demo expression, metadata, and provenance
-data/raw/, data/processed/ local data locations; full files are git-ignored
-docs/                      project charter, provenance, split, and demo docs
+configs/                   versioned scientific settings
+scripts/                   acquisition, cohort, split, modeling commands
+data/MANIFEST.sha256       source checksums
+data/demo/                 attributed real training-only preview
+data/raw/, data/processed/ local data and fitted artifacts; ignored by Git
+docs/                      cohort, provenance, model card, reproducibility
+reports/                   historical and aggregate scientific reports
 src/oncorna/               installable Python package
 tests/                     automated checks
-workflow/                  planned Snakemake workflow (later phase)
-.github/workflows/         pull-request CI
+workflow/                  future Snakemake plan
+.github/workflows/         CI
 ```
 
-## License and citation
+## License, citation, and contributions
 
-The **code** is licensed under the MIT License. Data and third-party resources retain their own terms; the Xena source pages do not display a file-level license, and this repository does not claim that the MIT license covers the demo data. The small subset is attributed in [`docs/demo_dataset.md`](docs/demo_dataset.md); see [`docs/data_provenance.md`](docs/data_provenance.md) before reusing it. Citation metadata is in [`CITATION.cff`](CITATION.cff).
+The [MIT license](LICENSE) covers project code. TCGA/Xena data and other third-party resources retain their own terms; the Xena source pages do not display a file-level license, and MIT does not relicense the preview. Review [data provenance](docs/data_provenance.md) and [demo attribution](docs/demo_dataset.md) before reuse. Citation metadata is in [CITATION.cff](CITATION.cff). Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md).

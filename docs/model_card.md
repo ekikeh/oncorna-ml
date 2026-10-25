@@ -1,31 +1,49 @@
 # Model card — OncoRNA-ML
 
-**Status:** Phase 2B training-only cross-validation and one frozen Phase 2C validation evaluation completed. The selected pipeline was fitted on all 506 training patients and evaluated once on 169 validation patients; the test set remains locked. Results and limitations are documented in the [Phase 2B report](../reports/phase_2b_training_cv.md) and [Phase 2C report](../reports/phase_2c_validation.md). They are not clinical performance claims.
+**Status:** The five-class TCGA-BRCA study is complete through one independently verified, one-time held-out evaluation. This card describes research evidence, not clinical performance. See the [aggregate results report](../reports/phase_3d_aggregate_results.md) and [reproducibility boundaries](reproducibility.md).
 
-## Intended use
+## Purpose and intended users
 
-Educational/research reproduction of a PAM50 subtype label-reconstruction workflow using public, de-identified breast-cancer data. A future model would be an educational research artifact only.
+This project is for students and computational oncology researchers studying how gene expression reconstructs existing PAM50 RNA-seq subtype calls. The target is the source `PAM50Call_RNAseq` field, mapped to Luminal A, Luminal B, Basal-like, HER2-enriched, and Normal-like. These labels themselves derive from expression; agreement with them is not independent biological ground truth or new biomarker discovery.
 
-## Out-of-scope use
+The model must not be used for diagnosis, individual prognosis, treatment selection, clinical triage, or patient care. It is not a medical device and has no clinical or external-cohort validation.
 
-Diagnosis, prognosis for an individual, treatment selection, clinical triage, or any patient-care decision. This project is not a medical device and has not been clinically validated.
+## Data and eligibility
 
-## Planned evaluation (not yet performed)
+Public UCSC Xena legacy TCGA-BRCA expression and clinical tables supplied the cohort. The [cohort definition](cohort_definition.md) selected one primary tumor sample per patient before requiring a mapped PAM50 call, yielding 844 patients and 844 samples. The [frozen patient split](data_splits.md) contains 506 training, 169 validation, and 169 test patients. The source expression is `log2(normalized_count + 1)`, not raw integer counts; its upstream normalization history cannot be fully reconstructed across partitions. The ordered model input contains 20,530 source genes. The earlier 17,623-gene Phase 1E processed matrix is not the model input.
 
-- **Target:** normalized PAM50 intrinsic-subtype labels derived from the source `PAM50Call_RNAseq` field and documented in [`docs/cohort_definition.md`](cohort_definition.md).
-- **Unit of separation:** patient, not aliquot/sample; the frozen train/validation/test design is documented in [`docs/data_splits.md`](data_splits.md).
-- **Validation:** any future development must keep the test partition locked and confine learned preprocessing, feature selection, and tuning to training data.
-- **Metrics:** macro-F1 as the primary metric, with class-wise precision/recall, balanced accuracy, confusion matrix, and uncertainty if supported by the data.
-- **Baselines:** dummy classifier, followed by regularized multinomial logistic regression before considering more complex models.
+The [source provenance](data_provenance.md) records URLs, dates, and checksums. MIT covers repository code only. The Xena source pages do not show a file-level license; the [small, source-derived training preview](demo_dataset.md) has its own attribution and reuse caveat. Full patient data and fitted artifacts remain local.
 
-The Phase 2B development and Phase 2C validation metrics are reported separately. No test result or deployable model artifact has been produced; the fitted pipeline is local-only.
+## Model and evaluation
 
-## Data and limitations
+Phase 2B used one shuffled, stratified four-fold split of the 506 training patients. It compared a majority baseline with logistic regression candidates; gene prevalence filtering and standardization were fitted within each fitting fold. Mean fold macro F1 selected `C=1`. This is **not nested cross-validation**: the same four-fold development results selected the hyperparameter and summarize its development performance.
 
-The approved TCGA-BRCA classification cohort contains **844 patients and 844 selected samples**. The normalized label counts are Luminal A (421), Luminal B (192), Basal-like (141), HER2-enriched (67), and Normal-like (23). The Phase 1E expression matrix contains 17,623 genes by 844 samples and stores the source's processed `log2(normalized_count + 1)` values; it is not a raw-count matrix. Provenance, inclusion rules, QC, and source limitations are detailed in the Phase 1 data documentation.
+Phase 2C fitted the selected pipeline on 506 training patients, retaining 17,613 genes, and evaluated the frozen 169-patient validation partition once. The final pipeline was then fitted on the fixed 675 training-plus-validation patients, retaining **17,623** genes, and evaluated on the 169-patient held-out test exactly once. Its prevalence filter retains genes with expression strictly greater than 1 in at least 20% of fitting patients, followed by `StandardScaler` and multinomial L2 logistic regression (`C=1`, `lbfgs`, intercept, no class weighting). Learned preprocessing belongs to each fit; the final estimator is distinct from the earlier validation estimator. The test evaluation is terminal and closed. No new tuning follows it.
 
-The Phase 1G preview contains only 10 frozen-training samples (two per class) and 100 fixed-position genes. It exists for inspecting table structure and source-value semantics, not for model development or performance estimates. TCGA is a research cohort and is not population-representative. PAM50 labels derived from RNA expression can share signal with expression predictors; any future findings must be framed as label reconstruction, not independent biomarker discovery. The upstream Xena source pages do not show a file-level license; the demo attribution and reuse caveat are documented in [`docs/demo_dataset.md`](demo_dataset.md).
+The original project proposal called for five-fold/three-fold nested CV, calibration, differential expression, pathway analysis, SHAP, and survival modeling. Those analyses were not completed by this study. The actual frozen protocol and its results are reported without rewriting that history.
 
-## Update policy
+## Aggregate performance
 
-Complete this card only after a properly locked evaluation. Report dataset version, split definition, software version, results with uncertainty, subgroup limitations, known failure modes, and model artifact checksum. Do not publish a clinical performance claim.
+| Partition and estimator | Macro F1 | Balanced accuracy | Accuracy |
+|---|---:|---:|---:|
+| Training, four-fold CV (mean of fold macro F1; other columns pooled) | 0.7925 | 0.7891 | 0.8814 |
+| Frozen validation, 506-patient fit | 0.7285 | 0.7288 | 0.8284 |
+| Held-out test, 675-patient fit | **0.7934** | **0.7556** | **0.8521** |
+
+Training pooled CV macro F1 is **0.7904**, which differs from the mean of four fold scores. The final test has **144 correct classifications among 169 patients**. Test class measures are:
+
+| Class | Precision | Recall | F1 | Support |
+|---|---:|---:|---:|---:|
+| Luminal A | 0.8556 | 0.9167 | 0.8851 | 84 |
+| Luminal B | 0.7297 | 0.6923 | 0.7105 | 39 |
+| Basal-like | 1.0000 | 1.0000 | 1.0000 | 28 |
+| HER2-enriched | 0.8333 | 0.7692 | 0.8000 | 13 |
+| Normal-like | 1.0000 | 0.4000 | 0.5714 | 5 |
+
+The five Normal-like test patients yield only **2/5** correct calls; one patient changes recall by 20 percentage points. Scores across development, validation, and test use different patients and, for validation versus test, different fitted estimators. They should not be read as a performance trend or a confidence interval. No test confidence interval or probability-calibration measure is claimed.
+
+## Limitations and use boundaries
+
+TCGA-BRCA is one research cohort, not a representative clinical population. Expression-derived labels share signal with the predictors. Xena's upstream normalization cannot be independently isolated by this repository, and the prevalence rule originated in earlier cohort-wide QC; therefore an entirely leakage-free end-to-end processing history is not established. Small classes, especially Normal-like, make class estimates unstable. No independent cohort establishes transportability across sites, platforms, or populations. Predicted probabilities have not been calibrated or validated as individual risk estimates.
+
+The public repository provides code, documentation, tests, and a 10-sample by 100-gene **real training-only structural preview**. It does not distribute the fitted model, complete arrays, patient-level predictions, or authorization and seal records. Public readers can inspect the study and run safe tests; they cannot reproduce the closed 169-patient assessment from the public checkout alone. See [release scope](release_scope.md).

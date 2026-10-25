@@ -1,45 +1,23 @@
 # Project charter — OncoRNA-ML
 
-**Status:** Data-preparation Phases 1A–1G, training-only Phase 2B cross-validation, and one frozen Phase 2C validation evaluation are implemented. The selected public source, approved cohort, processed matrix, frozen patient-level split, and compact attributed demo are documented in `docs/`. Aggregate model results are in the [Phase 2B](../reports/phase_2b_training_cv.md) and [Phase 2C](../reports/phase_2c_validation.md) reports; no test evaluation, train-plus-validation refit, differential expression, enrichment analysis, or biological interpretation has started.
+**Current status:** Data preparation (Phases 1A–1G), training-only four-fold cross-validation (Phase 2B), frozen validation (Phase 2C), the final 675-patient fit, and the one-time held-out evaluation (Phase 3D) are complete. The [aggregate report](../reports/phase_3d_aggregate_results.md) records approved final statistics. The historical [Phase 2B](../reports/phase_2b_training_cv.md) and [Phase 2C](../reports/phase_2c_validation.md) reports retain their original chronology.
 
-## Research question
+## Research question and completed endpoint
 
-Can a reproducible machine-learning workflow reconstruct TCGA-BRCA PAM50 intrinsic-subtype labels from gene-expression measurements, and do model errors or important features align with known breast-cancer biology?
+Can a regularized model reconstruct the five existing TCGA-BRCA expression-derived PAM50 calls from gene expression? The completed primary endpoint is multiclass label reconstruction in one research cohort. It does not establish independent biological ground truth, novel biomarkers, external generalization, or clinical validity. The model is not intended for diagnosis, individual prognosis, treatment selection, or triage.
 
-This is a computational learning exercise, not clinical validation and not a search for a deployable diagnostic.
+The original charter also proposed biological interpretation, differential expression and pathway enrichment, and optional overall-survival modeling. These remain **uncompleted proposals**, not outputs of the frozen classification experiment. Survival work would require independently reviewed time, event, censoring, and patient-identity harmonization. Count-based differential expression would require appropriate raw counts; the selected Xena expression values are already log-transformed normalized values.
 
-## Planned endpoints
+## Eligibility and scientific protocol
 
-- **Primary:** multiclass PAM50 subtype classification. The label source and rules for rare/unknown classes must be documented before modeling.
-- **Secondary (optional):** overall-survival risk analysis, only if time, event, censoring, and patient identifiers can be harmonized and independently checked.
-- **Descriptive:** Basal-like versus Luminal A differential expression and pathway enrichment, with a clear statement about which samples were used and why.
+The public source, sample inclusion, PAM50 mapping, and one-patient-one-sample resolution are documented in [cohort definition](cohort_definition.md) and [data provenance](data_provenance.md). The approved cohort has 844 primary-tumor patients and the [frozen split](data_splits.md) has 506 training, 169 validation, and 169 test patients. No controlled BAM/FASTQ or attempt to re-identify participants is part of this project.
 
-## Inclusion and data rules
+One shuffled, stratified four-fold split of training patients compared a majority baseline with logistic candidates and selected `C=1`. Fitted gene filtering and scaling stayed within each fitting fold. This was not the nested five-fold/three-fold protocol proposed in the original project outline. The validation estimator fitted 506 patients and retained 17,613 genes. The final estimator fitted the fixed 675 training-plus-validation patients from the ordered 20,530-gene input, retained 17,623 genes, and underwent one terminal 169-patient test assessment. No result-driven retuning follows the test.
 
-- Public, de-identified, open-access data only; no controlled BAM/FASTQ and no attempts to re-identify participants.
-- Prefer primary tumors for subtype classification; define normal samples and duplicate aliquots before analysis.
-- One patient contributes to only one split. Resolve multiple samples per patient using a documented rule before splitting.
-- Keep raw counts for negative-binomial differential-expression methods. Never treat TPM/FPKM as raw counts.
-- Check redistribution terms before placing any data in Git. Full-cohort and derived matrices stay out of the public repository.
+The primary headline is macro F1. Final test macro F1 was **0.7934**, balanced accuracy **0.7556**, and accuracy **0.8521** (144/169 correct). Normal-like recall was **2/5**. See the [model card](model_card.md) for class results, data and processing limitations, and research-only use boundaries.
 
-## Validation plan
+## Reproducibility and publication
 
-- Generate and freeze a patient-level test split before examining test performance.
-- Keep all preprocessing that learns from data—including scaling, feature selection, and tuning—inside training folds.
-- Compare against a dummy baseline and a regularized multinomial logistic-regression model before adding complex models.
-- Headline macro-F1; also report balanced accuracy, per-class precision/recall, confusion matrix, and uncertainty where sample size permits.
-- A compact, fixed demo subset from the training partition is committed for table/schema inspection; synthetic fixtures may be used in tests. Neither the demo nor synthetic fixtures are evidence of biological or clinical performance.
+The tracked 10-sample by 100-gene [preview](demo_dataset.md) is real, attributed, training-only data for table inspection. It is not a synthetic prediction demo or performance evidence. The historical scientific environment, public implementation, and proposed synthetic package are distinguished in the [reproducibility appendix](reproducibility.md). Full cohort arrays, fitted binaries, patient-level predictions, and protected evaluation records stay outside the proposed public [release scope](release_scope.md). MIT licenses repository code, not upstream data or its preview.
 
-## Success criteria
-
-1. A new user can create the environment and run tests from a clean clone.
-2. A new user can inspect the committed demo without downloading the full cohort; reproducing it is deterministic when the documented local Phase 1C/1E/1F inputs are present.
-3. Input provenance, patient-level split logic, parameters, and software versions are recorded.
-4. Any eventual results include leakage checks, baselines, class-wise errors, limitations, and a clear non-clinical disclaimer.
-
-## Recorded Phase 1 decisions and future review
-
-- Cohort/sample inclusion, patient-to-sample mapping, PAM50 normalization, QC, matrix semantics, and the immutable patient-level split are recorded in the corresponding Phase 1 documentation.
-- Phase 1G documents and tests the small training-only demo sampling rules and source attribution. Xena does not display a file-level license for the source files; review current upstream terms before any broader redistribution. The repository's MIT license covers project code only.
-- If count-based differential expression is implemented later, select a raw-count source; the Phase 1A Xena expression file is log2-normalized and is not suitable as raw DESeq2/PyDESeq2 input.
-- Before any Phase 2 modeling or evaluation, follow the locked-test policy in `docs/data_splits.md` and keep learned preprocessing, feature selection, and tuning inside training folds.
+The test is complete and closed. Future interpretation or external validation needs a separate reviewed protocol; it cannot alter the frozen study.

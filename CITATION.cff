@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
-title: "OncoRNA-ML: Reproducible RNA-seq Biomarker Discovery and Interpretable Risk Classification"
+title: "OncoRNA-ML: TCGA-BRCA Expression-Based PAM50 Subtype Reconstruction"
 type: software
 authors:
   - name: "ekikeh"
