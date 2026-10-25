@@ -8,6 +8,7 @@ import pytest
 
 from oncorna.prediction import (
     FROZEN_INPUT_GENE_COUNT,
+    MAX_EXACT_INTEGER,
     PredictionInputContract,
     PredictionInputError,
 )
@@ -87,7 +88,7 @@ def test_unhashable_sample_and_gene_names_fail_cleanly(frame: pd.DataFrame) -> N
 @pytest.mark.parametrize("dtype", [str, bool, complex, object])
 def test_nonnumeric_or_nonreal_dtypes_fail(frame: pd.DataFrame, dtype: type) -> None:
     invalid = frame.astype(dtype)
-    with pytest.raises(PredictionInputError, match="real numeric"):
+    with pytest.raises(PredictionInputError, match="Unsupported expression dtype"):
         PredictionInputContract(tuple(frame.columns)).validate(invalid)
 
 
@@ -98,11 +99,180 @@ def test_nonfinite_or_negative_values_fail(frame: pd.DataFrame, value: float) ->
         PredictionInputContract(tuple(frame.columns)).validate(frame)
 
 
-def test_nullable_missing_values_fail(frame: pd.DataFrame) -> None:
+def test_nullable_missing_values_have_unsupported_dtype(frame: pd.DataFrame) -> None:
     frame = frame.astype("Float64")
     frame.iloc[0, 0] = pd.NA
-    with pytest.raises(PredictionInputError, match="NaN"):
+    with pytest.raises(PredictionInputError, match="Unsupported expression dtype"):
         PredictionInputContract(tuple(frame.columns)).validate(frame)
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [
+        "float32",
+        "float64",
+        "int8",
+        "int16",
+        "int32",
+        "int64",
+        "uint8",
+        "uint16",
+        "uint32",
+        "uint64",
+    ],
+)
+def test_allowlisted_native_dtypes_preserve_values_and_input(dtype: str) -> None:
+    native = np.dtype(dtype)
+    if native.kind == "f":
+        values = [0.0, np.nextafter(native.type(0), native.type(1)), 0.125, np.finfo(native).max]
+    else:
+        values = [0, 1, min(np.iinfo(native).max, MAX_EXACT_INTEGER)]
+    expression = pd.DataFrame(
+        np.asarray(values, dtype=native).reshape(-1, 1),
+        columns=["SYN-GENE-01"],
+        index=[f"SYN-{index:04d}" for index in range(len(values))],
+    )
+    before = expression.copy(deep=True)
+    assert PredictionInputContract(("SYN-GENE-01",)).validate(expression) is expression
+    pd.testing.assert_frame_equal(expression, before)
+    np.testing.assert_array_equal(
+        expression.to_numpy(dtype=np.float64).astype(native), expression.to_numpy()
+    )
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+@pytest.mark.parametrize("case", ["tiny_negative", "large_negative", "nan", "inf", "negative_inf"])
+def test_native_float_edge_cases_are_rejected_without_mutation(dtype: str, case: str) -> None:
+    native = np.dtype(dtype).type
+    values = {
+        "tiny_negative": -np.nextafter(native(0), native(1)),
+        "large_negative": -np.finfo(native).max,
+        "nan": np.nan,
+        "inf": np.inf,
+        "negative_inf": -np.inf,
+    }
+    expression = pd.DataFrame(
+        np.array([[values[case]]], dtype=dtype), columns=["SYN-GENE-01"], index=["SYN-0001"]
+    )
+    before = expression.copy(deep=True)
+    with pytest.raises(PredictionInputError, match="NaN|nonnegative"):
+        PredictionInputContract(("SYN-GENE-01",)).validate(expression)
+    pd.testing.assert_frame_equal(expression, before)
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_negative_zero_is_accepted_as_zero_and_preserved(dtype: str) -> None:
+    expression = pd.DataFrame(
+        np.array([[-0.0], [0.0]], dtype=dtype),
+        columns=["SYN-GENE-01"],
+        index=["SYN-0001", "SYN-0002"],
+    )
+    before = expression.copy(deep=True)
+    assert PredictionInputContract(("SYN-GENE-01",)).validate(expression) is expression
+    assert np.signbit(expression.iloc[0, 0]) and not np.signbit(expression.iloc[1, 0])
+    pd.testing.assert_frame_equal(expression, before)
+
+
+@pytest.mark.parametrize("dtype", ["int64", "uint64"])
+@pytest.mark.parametrize("case", ["rounding", "maximum"])
+def test_integer_values_outside_exact_conversion_range_fail(dtype: str, case: str) -> None:
+    value = MAX_EXACT_INTEGER + 1 if case == "rounding" else np.iinfo(dtype).max
+    expression = pd.DataFrame(
+        np.array([[value]], dtype=dtype), columns=["SYN-GENE-01"], index=["SYN-0001"]
+    )
+    before = expression.copy(deep=True)
+    with pytest.raises(PredictionInputError, match=r"between 0 and 2\*\*53"):
+        PredictionInputContract(("SYN-GENE-01",)).validate(expression)
+    pd.testing.assert_frame_equal(expression, before)
+
+
+@pytest.mark.parametrize("dtype", ["int8", "int16", "int32", "int64"])
+def test_negative_integer_values_fail(dtype: str) -> None:
+    expression = pd.DataFrame(
+        np.array([[np.iinfo(dtype).min]], dtype=dtype),
+        columns=["SYN-GENE-01"],
+        index=["SYN-0001"],
+    )
+    with pytest.raises(PredictionInputError, match="nonnegative"):
+        PredictionInputContract(("SYN-GENE-01",)).validate(expression)
+
+
+@pytest.mark.parametrize("case", ["negative", "nonfinite", "mixed_integer_rounding"])
+def test_native_checks_run_before_any_matrix_conversion(monkeypatch, case: str) -> None:
+    expression = pd.DataFrame(
+        {
+            "SYN-GENE-01": np.array([1], dtype="int64"),
+            "SYN-GENE-02": np.array([MAX_EXACT_INTEGER + 1], dtype="uint64"),
+        },
+        index=["SYN-0001"],
+    )
+    if case != "mixed_integer_rounding":
+        expression = expression.astype("float64")
+        expression.iloc[0, 0] = -np.nextafter(0.0, 1.0) if case == "negative" else np.inf
+    before = expression.copy(deep=True)
+
+    def forbidden_cast(*_args, **_kwargs):
+        pytest.fail("Matrix conversion reached before invalid native values were rejected")
+
+    with monkeypatch.context() as guard:
+        guard.setattr(pd.DataFrame, "to_numpy", forbidden_cast)
+        with pytest.raises(PredictionInputError, match="nonnegative|NaN|between 0"):
+            PredictionInputContract(tuple(expression.columns)).validate(expression)
+    pd.testing.assert_frame_equal(expression, before)
+
+
+@pytest.mark.parametrize(
+    "dtype", ["float16", "Float32", "Float64", "Int64", "UInt64", pd.SparseDtype("float64", 0)]
+)
+def test_other_numeric_dtypes_are_explicitly_unsupported(dtype: object) -> None:
+    expression = pd.DataFrame({"SYN-GENE-01": pd.Series([1], dtype=dtype)})
+    expression.index = ["SYN-0001"]
+    with pytest.raises(PredictionInputError, match="Unsupported expression dtype"):
+        PredictionInputContract(("SYN-GENE-01",)).validate(expression)
+
+
+def test_non_native_byte_order_is_unsupported() -> None:
+    dtype = np.dtype("float64").newbyteorder("S")
+    expression = pd.DataFrame(
+        np.array([[1.0]], dtype=dtype), columns=["SYN-GENE-01"], index=["SYN-0001"]
+    )
+    with pytest.raises(PredictionInputError, match="Unsupported expression dtype"):
+        PredictionInputContract(("SYN-GENE-01",)).validate(expression)
+
+
+def test_structured_arrays_are_rejected() -> None:
+    values = np.array([(1.0,)], dtype=[("SYN-GENE-01", "float64")])
+    with pytest.raises(PredictionInputError, match="DataFrame"):
+        PredictionInputContract(("SYN-GENE-01",)).validate(values)
+
+
+@pytest.mark.skipif(
+    np.finfo(np.longdouble).max <= np.finfo(np.float64).max,
+    reason="Platform longdouble has no extended exponent range; no underflow/overflow coverage",
+)
+@pytest.mark.parametrize("value", ["-1e-4000", "1e4000"])
+def test_extended_precision_is_rejected_before_lossy_conversion(monkeypatch, value: str) -> None:
+    native = np.longdouble(value)
+    assert np.isfinite(native)
+    with np.errstate(over="ignore", under="ignore"):
+        narrowed = np.float64(native)
+    if native < 0:
+        assert narrowed == 0 and np.signbit(narrowed)
+    else:
+        assert np.isinf(narrowed)
+    expression = pd.DataFrame(
+        np.array([[native]], dtype=np.longdouble), columns=["SYN-GENE-01"], index=["SYN-0001"]
+    )
+    before = expression.copy(deep=True)
+
+    def forbidden_cast(*_args, **_kwargs):
+        pytest.fail("Unsupported extended precision reached a float64 conversion")
+
+    with monkeypatch.context() as guard:
+        guard.setattr(pd.DataFrame, "to_numpy", forbidden_cast)
+        with pytest.raises(PredictionInputError, match="Unsupported expression dtype"):
+            PredictionInputContract(("SYN-GENE-01",)).validate(expression)
+    pd.testing.assert_frame_equal(expression, before)
 
 
 @pytest.mark.parametrize("shape", [(), (3,), (2, 3), (2, 3, 1)])

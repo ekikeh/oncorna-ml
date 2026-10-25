@@ -55,9 +55,27 @@ different library versions or numerical backends is not promised.
 `validate(frame)` accepts only a nonempty two-dimensional pandas DataFrame with samples
 as rows, gene identifiers as columns, and sample identifiers as the index. It returns
 the original frame unchanged. It rejects missing, extra, duplicate, or reordered genes;
-invalid or duplicate samples; nonnumeric, boolean, or complex dtypes; NaN, infinity,
-negative values; unlabeled arrays; empty populations; and hierarchical sample indices.
-Numeric-looking strings are rejected rather than coerced. Sample IDs must start with
+invalid or duplicate samples; NaN, infinity, negative values; unlabeled arrays; empty
+populations; and hierarchical sample indices.
+
+Supported column dtypes are native-endian NumPy `float32`, `float64`, and signed or
+unsigned `int8`/`int16`/`int32`/`int64` and `uint8`/`uint16`/`uint32`/`uint64`.
+Floating values must be finite and nonnegative. Integer values must lie in `0..2**53`
+(inclusive), the contiguous integer range exactly representable as float64.
+Finite float64 values up to its maximum and positive subnormal values are supported.
+IEEE **negative zero is accepted as numerically zero** and its original sign bit is
+preserved. Native values are checked column by column before any float64 conversion;
+the conversion is checked for nonfinite or negative results and is only a temporary
+validation copy. The returned frame retains its original values and dtypes.
+
+Extended-precision floats, float16, non-native byte order, pandas nullable/sparse
+extension dtypes, and complex, object, string, boolean, or structured dtypes are outside
+this deliberately narrow contract. A platform alias with the same dtype as float64 is
+treated as float64; tests do not claim extended-precision coverage where `longdouble`
+has no wider exponent range. No dtype or string conversion is performed to admit
+unsupported inputs. Numeric-looking strings are rejected rather than coerced.
+
+Sample IDs must start with
 an ASCII letter or digit and otherwise contain only ASCII letters, digits, underscores,
 dots, colons, or hyphens. Schema genes must be unique nonempty printable strings without
 whitespace. Validation never rearranges genes, normalizes, log-transforms, selects

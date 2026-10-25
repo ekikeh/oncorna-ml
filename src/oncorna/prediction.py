@@ -10,10 +10,25 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from pandas.api.types import is_bool_dtype, is_complex_dtype, is_numeric_dtype
 
 FROZEN_INPUT_GENE_COUNT = 20_530
 INPUT_SEMANTICS = "previously_normalized_log_transformed_expression_like"
+MAX_EXACT_INTEGER = 2**53
+_SUPPORTED_DTYPES = frozenset(
+    np.dtype(name)
+    for name in (
+        "float32",
+        "float64",
+        "int8",
+        "int16",
+        "int32",
+        "int64",
+        "uint8",
+        "uint16",
+        "uint32",
+        "uint64",
+    )
+)
 _SAMPLE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]*", flags=re.ASCII)
 
 
@@ -81,13 +96,28 @@ class PredictionInputContract:
                 "missing, extra or reordered genes"
             )
         if any(
-            not is_numeric_dtype(dtype) or is_bool_dtype(dtype) or is_complex_dtype(dtype)
+            not isinstance(dtype, np.dtype) or dtype not in _SUPPORTED_DTYPES
             for dtype in expression.dtypes
         ):
-            raise PredictionInputError("Expression values must have real numeric dtypes")
-        values = expression.to_numpy(dtype=np.float64, na_value=np.nan)
-        if not np.isfinite(values).all():
-            raise PredictionInputError("NaN and infinite expression values are not allowed")
-        if (values < 0).any():
-            raise PredictionInputError("Expected nonnegative normalized log-expression-like values")
+            raise PredictionInputError(
+                "Unsupported expression dtype: use native NumPy float32/float64 "
+                "or signed/unsigned 8/16/32/64-bit integers"
+            )
+        # Inspect each column in its original dtype. Combining integer columns or
+        # narrowing extended floats first could hide an invalid value through rounding.
+        for _, column in expression.items():
+            native = column.to_numpy(copy=False)
+            if not np.isfinite(native).all():
+                raise PredictionInputError("NaN and infinite expression values are not allowed")
+            if (native < 0).any():
+                raise PredictionInputError(
+                    "Expected nonnegative normalized log-expression-like values"
+                )
+            if native.dtype.kind in "iu" and (native > MAX_EXACT_INTEGER).any():
+                raise PredictionInputError("Integer expression values must be between 0 and 2**53")
+        # Accepted floats widen exactly (or remain float64); bounded integers are
+        # exactly representable. IEEE negative zero is accepted as zero, not rewritten.
+        values = expression.to_numpy(dtype=np.float64)
+        if not np.isfinite(values).all() or (values < 0).any():
+            raise PredictionInputError("Unsafe float64 conversion of expression values")
         return expression
