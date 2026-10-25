@@ -10,6 +10,8 @@ Do not include private fitted-model binaries, full patient-level expression or m
 
 A public user can inspect the code and reports and run safe tests. The repository does not supply the controlled inputs, fitted model, or authorization needed to reproduce the 169-patient held-out evaluation. The existing 100-gene, 10-sample preview is real training data for structure inspection; it cannot serve as a final-model input or performance demonstration.
 
-## Proposed later package
+## Standalone synthetic demo and later packaging
 
-A separately reviewed release can add an invented synthetic fixture, deterministic demo, strict ordered-gene input checks, and a safe prediction contract that requires an explicit trusted model identity. Its exact dependency pins, CI run, and any Docker image will apply to that synthetic demonstration. They will not imply that the synthetic outputs reproduce the frozen scientific result or establish clinical use. Inspect built archives and container contents before publication; ignore rules alone are not proof of exclusion.
+The [standalone synthetic demo](synthetic_demo.md) generates its entire fixture in memory, fits a fresh synthetic classifier, and prints only labeled aggregate results. Its strict ordered-gene validation component accepts an explicit schema and does not load a model. No artifact-loading interface or production inference is provided; caller-supplied models and model-path options are not accepted.
+
+Exact dependency pins and broader CI/distribution changes remain Phase 4D. Any synthetic test environment is separate from the historical science environment. A synthetic demonstration does not reproduce the frozen scientific result or establish clinical use. Inspect built archives and container contents before publication; ignore rules alone are not proof of exclusion.

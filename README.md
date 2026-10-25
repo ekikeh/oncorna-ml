@@ -51,7 +51,7 @@ These checks use repository tests; they do not run the completed 169-patient eva
 
 For source acquisition, see [data provenance](docs/data_provenance.md) and `scripts/download_data.py`. Downloading and processing the full cohort is separate from this quick start. The tracked [preview](data/demo/README.md) is **10 real training samples by 100 genes**, selected for table inspection. It is neither synthetic nor representative and cannot be passed to the final fitted model. Its [selection and attribution](docs/demo_dataset.md) are documented.
 
-A future Phase 4C may add an invented synthetic demonstration, exact demo dependency pins, and synthetic-only CI checks. These are planned features, not an available reproduction of the frozen test. The fitted model, complete arrays, patient-level predictions, and evaluation authorizations remain local; the [release scope](docs/release_scope.md) explains why the public checkout cannot reproduce the closed held-out assessment.
+Run `python -m oncorna.synthetic_demo` for a separate offline [synthetic teaching demonstration](docs/synthetic_demo.md), labeled `synthetic_demo_only`. It generates invented data, trains a fresh demonstration model, and prints aggregate results and a confusion matrix. Exact dependency locks and broader CI/packaging changes remain Phase 4D work. The fitted real model, complete arrays, patient-level predictions, and evaluation authorizations remain local; the [release scope](docs/release_scope.md) explains why the public checkout cannot reproduce the closed held-out assessment.
 
 ## Repository map
 

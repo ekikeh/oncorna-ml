@@ -16,6 +16,8 @@ The public checkout contains code, versioned configurations, source checksum ref
 
 Current `pyproject.toml` dependency ranges and `environment.yml` target a working development environment; they are not an exact lock of the historical scientific runtime. Existing CI runs lint and tests. Its result should not be interpreted as reproducing the frozen scientific evaluation.
 
-## Planned synthetic package
+## Standalone synthetic demonstration and planned packaging
 
-A future phase may add invented, deterministic synthetic inputs and a prediction demonstration, with separately pinned dependencies and synthetic-only CI. Any future Docker image and its dependency set will describe that tested demonstration environment, not retrospectively certify or replace the historical science environment. Synthetic scores will be labeled as synthetic and will not stand in for the final held-out statistics. See [release scope](release_scope.md).
+The separate [synthetic demonstration](synthetic_demo.md) now generates 100 training and 40 evaluation samples over 12 invented genes with default seed 20261026. It fits its own model in memory and prints aggregate results labeled `synthetic_demo_only`, dataset digests, and dependency versions. It does not load any real fitted artifact or access patient data. Strict input validation is independently reusable; it performs no inference or preprocessing fit.
+
+Exact dependency pins and broader synthetic-only CI/distribution work remain Phase 4D. Any Docker test environment and its dependency set describe the tested software fixtures, not the historical scientific environment. Synthetic scores do not stand in for the final held-out statistics. See [release scope](release_scope.md).
