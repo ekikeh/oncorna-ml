@@ -7,6 +7,9 @@
 
 > **Research and education only.** This is not a diagnostic, prognostic, treatment-selection, or patient-care tool.
 
+Proposed first version: **v0.1.0**. See the [release-candidate notes](docs/release_candidate.md)
+for scope, installation, verification evidence, and remaining publication gates.
+
 ## Research question and status
 
 Can a regularized model reconstruct existing expression-derived PAM50 calls from TCGA-BRCA gene-expression measurements under a frozen patient-level evaluation? The completed study includes cohort preparation (Phases 1A–1G), four-fold training development CV (Phase 2B), one frozen validation assessment (Phase 2C), a final 675-patient fit, and one independently verified held-out test assessment (Phase 3D). The held-out evaluation is terminal and closed. [Historical reports](reports/README.md) retain what was known at each phase.
@@ -64,7 +67,7 @@ data/demo/                 attributed real training-only preview
 data/raw/, data/processed/ local data and fitted artifacts; ignored by Git
 docs/                      cohort, provenance, model card, reproducibility
 reports/                   historical and aggregate scientific reports
-src/oncorna/               installable Python package
+src/oncorna/               research source; three demo modules are installable
 tests/                     automated checks
 workflow/                  future Snakemake plan
 .github/workflows/         CI
