@@ -5,7 +5,7 @@
 - **Dataset:** TCGA Breast Cancer (TCGA-BRCA), legacy TCGA cohort hosted by the UCSC Xena TCGA hub.
 - **Public source:** [UCSC Xena TCGA hub](https://tcga.xenahubs.net/) and [Xena Data Pages](https://xenabrowser.net/datapages/).
 - **Access level:** public/open access; the selected files download without login or an API token. This workflow does not request controlled-access data and does not download FASTQ or BAM files.
-- **Download date:** 2026-10-06 (initial retrieval run in this workspace). File-level SHA-256 checksums are in `data/MANIFEST.sha256`. Update this date if documenting a later retrieval/release.
+- **Download date:** 2026-10-06 (initial retrieval run in this workspace). File-level SHA-256 checksums are in `data/MANIFEST.sha256`. Preserve this historical retrieval date when releasing software; document any later data retrieval separately.
 - **Source versions:** the Xena data pages identify the expression matrix as version `2017-10-13` and the clinical matrix as version `2019-12-06`. Both objects returned HTTP `Last-Modified: 2021-04-08` during the 2026-10-06 source check.
 
 ## Files and data types
@@ -37,7 +37,60 @@ The exact sample-ID intersection is 1,218: 100.0% of the 1,218 unique expression
 
 ## Usage, license, and attribution
 
-The Xena data pages do not display a file-level license for these cohort files. Cite UCSC Xena and the applicable TCGA source/publications, and check current TCGA publication/data-use guidance before reusing or redistributing source data. The repository's MIT license applies to project code only; it does not relicense these cohort files. This project does not commit the full expression or clinical matrices. Phase 1G commits only a compact, attributed 100-gene-by-10-training-sample preview under `data/demo/`; its selection rules and the remaining upstream-license caveat are documented in [`docs/demo_dataset.md`](demo_dataset.md). The [GDC FAQ](https://gdc.cancer.gov/about-gdc/gdc-faqs) describes accredited use of open-access GDC data, but does not supply a file-specific Xena license or independently settle republication of this excerpt.
+The repository's MIT license covers project code, not third-party datasets. This project
+does not commit the full expression or clinical matrices. Phase 1G includes only the
+100-gene-by-10-training-sample preview under `data/demo/`; see its
+[selection and attribution](demo_dataset.md). Public accessibility and attribution alone
+are not the basis for the redistribution finding below.
+
+### Verified redistribution evidence (reviewed 2026-10-27)
+
+The following are explicit source statements, independently rechecked in Phase 5C:
+
+- The [expression metadata JSON](https://tcga.xenahubs.net/download/TCGA.BRCA.sampleMap/HiSeqV2.json)
+  for `TCGA.BRCA.sampleMap/HiSeqV2` on `tcga.xenahubs.net` identifies TCGA as owner,
+  public security, version `2017-10-13`, and **`redistribution: true`**. It credits
+  the University of North Carolina TCGA genome characterization center and describes
+  Level 3 RSEM normalized expression downloaded from TCGA and log2(x+1)-processed at
+  UCSC. This field is evidence for this particular expression resource; it is not
+  a named license or a permission statement for every Xena resource. The corresponding
+  [clinical metadata](https://tcga.xenahubs.net/download/TCGA.BRCA.sampleMap/BRCA_clinicalMatrix.json)
+  identifies `BRCA_clinicalMatrix`, version `2019-12-06`; it does not contain the same
+  redistribution field.
+- In [NCI correspondence dated 2016-07-18](https://github.com/cognoma/cancer-data/files/370246/TCGA-public-domain-email.pdf),
+  Amy Blum (NCI/CCG/TCGA Communications Manager) states that open-access TCGA data are
+  in the public domain, permits redistribution, and asks for TCGA attribution.
+  This is historical correspondence reproduced by the recipient, not a newly issued
+  dataset-specific license. Its subject is the open-access tier, not controlled data;
+  it does not waive participant privacy obligations or establish project-code rights.
+- In the [Xena staff clarification dated 2016-10-31](https://github.com/cognoma/cancer-data/issues/3#issuecomment-257434747),
+  Jing Zhu explains that Xena adds no restrictions to use of its processed TCGA data
+  and treats those processed TCGA data as public domain. The statement expressly does
+  not extend that conclusion to other data providers. It does not assert that every
+  Xena-hosted dataset has identical permissions.
+- The current [GDC data access policy](https://gdc.cancer.gov/access-data/data-access-policies)
+  requires adherence to NIH genomic-data-sharing policy, including not attempting
+  participant identification and acknowledging the datasets/accessions and repositories
+  in disclosures, presentations and publications. Open access does not remove those
+  obligations. Controlled-access data have separate authorization and use limitations.
+
+**Project interpretation:** together, the resource-specific expression metadata, NCI
+open-access statement and Xena processed-TCGA clarification support redistribution of
+this documented open TCGA-BRCA training preview, including its source-derived clinical
+labels. The clinical resource does not independently declare `redistribution: true`;
+its reuse assessment relies on the broader open-TCGA evidence and documented provenance.
+No new MIT or CC0 license is assigned to the upstream datasets by this project.
+This finding does not authorize controlled-data redistribution or unrelated Xena resources.
+
+Retain attribution to TCGA, UCSC Xena and the expression producer, the exact dataset
+names/versions/URLs, source checksum references, copied-value semantics and preview
+selection rules. Those records are in this document, `data/MANIFEST.sha256`,
+`docs/demo_dataset.md`, `data/demo/README.md` and `data/demo/demo_manifest.json`.
+The preview's sample/participant identifiers can be linked to other public records;
+they are **not anonymous**. Do not attempt participant reidentification or link records
+to identify people. Redistribution evidence does not certify anonymity or clinical
+suitability. The real preview remains excluded from the wheel, package source archive
+and minimal demo image; full-repository GitHub snapshots include it.
 
 Useful source pages:
 

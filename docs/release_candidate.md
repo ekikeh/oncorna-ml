@@ -79,8 +79,17 @@ checkout credentials are not persisted, and there are no publication steps.
 The [Phase 5A verification report](../reports/phase_5a_release_candidate.md) records
 candidate archive hashes, tests and limitations. Exact allowlists and content audits
 apply to both archives. Scanners supplement review and cannot prove arbitrary text
-contains no secrets. The third-party preview's reuse terms require independent review
-for a full repository release; MIT does not grant dataset redistribution rights.
+contains no secrets. MIT does not grant third-party dataset redistribution rights;
+the separate evidence for this preview is recorded below.
+
+Phase 5C records the [verified TCGA/Xena redistribution evidence](data_provenance.md#verified-redistribution-evidence-reviewed-2026-10-27)
+and its scope, attribution and non-reidentification conditions. Preview identifiers
+are linkable, not anonymous. This supports inclusion of the documented preview in
+repository snapshots without extending MIT to datasets or permissions to other resources.
+The preparation baseline `6ccfc76156933c7b5564547c762f25994e79df16` passed both
+hosted platforms in [run 40390676509](https://github.com/ekikeh/oncorna-ml/actions/runs/40390676509):
+Linux 387 passed / 13 skipped / 27 warnings; Windows 336 passed / 64 skipped /
+2 warnings. That run does not cover later provenance-preparation changes.
 
 Cite [CITATION.cff](../CITATION.cff) and credit TCGA/UCSC Xena using the
 [provenance and attribution](data_provenance.md). **Research and education only;
@@ -92,12 +101,22 @@ not for clinical use.**
    archive inventories and recorded hashes; resolve any redistribution concerns.
 2. If authorized, push the reviewed changes and require both platform CI jobs to pass
    on the exact intended release commit. Do not substitute the baseline CI result.
-3. Set the actual release date in CITATION.cff when known, review and commit it,
-   rerun affected checks and both CI jobs, then rebuild/audit the final archives.
-   Record new hashes because citation changes alter archive contents.
-4. Obtain approval for that exact commit and artifacts. Only then create and push
-   the authorized `v0.1.0` tag and create the GitHub release with these scope notes
-   and only audited attachments plus checksums. Inspect the auto-generated source
-   archives as full-repository distributions, including preview licensing.
+3. Leave `date-released` absent while the release date is unknown. Once the actual
+   publication date is established and citation editing is authorized, set it to that
+   calendar date (YYYY-MM-DD), review and commit the change. Do not use a preparation
+   date as a substitute. If publication is deferred to another date, correct the date
+   and repeat the affected gates before release. Record the exact final commit SHA
+   and require both hosted CI jobs to pass on that SHA after any citation change.
+4. From that clean final commit, build/audit the wheel and source archive with the
+   locked tools, verify the clean install and deterministic demo, and compute new
+   SHA-256 hashes for the exact files to attach. Preserve the actual audited bytes;
+   a later rebuild is not automatically equivalent. Review a full-repository snapshot
+   before tagging: it includes the attributed real preview, historical source and tests,
+   unlike the 8-file wheel and 31-file package source archive. Check preview provenance
+   and absence of protected artifacts. Obtain explicit authorization naming the final
+   commit, `v0.1.0` tag and attachments before any release operation. Only then create
+   and push that tag at the approved commit and create the GitHub release. Attach only
+   the audited wheel, package source archive and their matching checksum manifest;
+   verify uploaded hashes and the automatically generated repository snapshots.
 5. Package-index or container publication needs its own explicit authorization.
    No release operation is authorized by successful local verification.

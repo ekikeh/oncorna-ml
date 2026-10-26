@@ -68,4 +68,12 @@ The builder validates the matrix and gene-list checksums, sample/gene dimensions
 - This is a tiny, deliberately balanced structural preview (two samples per class), not a random sample of the cohort's class frequencies and not a representative clinical or population sample.
 - Only training-partition samples are included. The demo cannot be used to evaluate a model, tune a threshold, select genes, estimate performance, or make biological or clinical claims.
 - The source is the public/open TCGA-BRCA `TCGA.BRCA.sampleMap/HiSeqV2` expression resource hosted by [UCSC Xena](https://xenabrowser.net/datapages/?dataset=TCGA.BRCA.sampleMap%2FHiSeqV2&host=https%3A%2F%2Ftcga.xenahubs.net), with PAM50 labels from the approved Xena/TCGA clinical source. See [`docs/data_provenance.md`](data_provenance.md) for exact inputs and citations.
-- Xena's pages do not display a file-level license for these source files. The [GDC FAQ](https://gdc.cancer.gov/about-gdc/gdc-faqs) describes accredited use of open-access GDC data, but does not establish a separate file-specific Xena license or explicitly resolve republication of this excerpt. This repository provides source attribution and makes no claim that its MIT code license applies to the data. Review current upstream terms before broader redistribution; see [`docs/data_provenance.md`](data_provenance.md).
+- The [verified redistribution evidence](data_provenance.md#verified-redistribution-evidence-reviewed-2026-10-27)
+  records the expression resource's `redistribution: true`, historical NCI permission
+  for attributed open-TCGA redistribution, and Xena's clarification for processed TCGA.
+  The clinical metadata lacks that field; its assessment uses the broader open-TCGA
+  statements. These findings support this documented preview, not unrelated resources.
+  MIT covers project code only. Preserve source attribution, versions, checksums and
+  selection rules. Identifiers may be linkable and are not anonymous; participant
+  reidentification is prohibited. The preview is included in repository snapshots
+  and excluded from the installable demo archives and image.

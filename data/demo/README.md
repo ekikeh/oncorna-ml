@@ -10,4 +10,12 @@ Two samples are included for each of the five available normalized PAM50 classes
 
 The expression values are copied verbatim from the Phase 1E processed matrix and remain `log2(normalized_count + 1)`. No extra transformation, scaling, imputation, or modeling-based feature selection is applied. The full cohort, matrix, and local split manifest are not included here.
 
-For exact selection rules, reproduction prerequisites, limitations, and attribution/licensing notes, see [`docs/demo_dataset.md`](../../docs/demo_dataset.md) and [`docs/data_provenance.md`](../../docs/data_provenance.md). The Xena source files have no displayed file-level license; the repository does not claim that its MIT code license applies to these data.
+For exact selection rules, reproduction prerequisites, limitations and attribution,
+see [preview documentation](../../docs/demo_dataset.md) and the
+[verified redistribution evidence](../../docs/data_provenance.md#verified-redistribution-evidence-reviewed-2026-10-27).
+The expression metadata permits redistribution; NCI and Xena statements support reuse
+of the documented open-TCGA preview with attribution. Preserve the upstream versions,
+checksum references and selection rules. MIT covers project code only. The sample and
+participant identifiers may be linkable and are not anonymous; do not attempt to
+reidentify participants. Full-repository snapshots include this preview; installable
+demo archives and the minimal image exclude it.
