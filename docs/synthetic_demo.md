@@ -45,8 +45,8 @@ and predicts with that fitted pipeline. There is no hyperparameter search or cal
 
 Repeated generation and execution with the same seed and dependency environment produce
 the same values and predictions. JSON excludes timestamps and run durations and records
-data digests and Python, NumPy, pandas, and scikit-learn versions. Exact dependency locks
-and broader container/CI packaging are reserved for Phase 4D. Bitwise equality across
+data digests and Python, NumPy, pandas, and scikit-learn versions. The separate
+[packaging guide](packaging.md) documents exact platform locks and container/CI checks. Bitwise equality across
 different library versions or numerical backends is not promised.
 
 ## Reusable input contract

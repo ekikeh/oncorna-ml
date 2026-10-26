@@ -32,9 +32,10 @@ def test_sha256_file_matches_expected_digest(tmp_path: Path) -> None:
     file_path = tmp_path / "sample.bin"
     file_path.write_bytes(b"OncoRNA-ML checksum test")
 
-    assert download_data.sha256_file(file_path) == hashlib.sha256(
-        b"OncoRNA-ML checksum test"
-    ).hexdigest()
+    assert (
+        download_data.sha256_file(file_path)
+        == hashlib.sha256(b"OncoRNA-ML checksum test").hexdigest()
+    )
 
 
 def test_download_creates_raw_directory_and_manifest(

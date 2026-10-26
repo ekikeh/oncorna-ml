@@ -1,0 +1,10 @@
+-r runtime.in
+matplotlib==3.11.2
+seaborn==0.13.2
+PyYAML==6.0.3
+build==1.6.1
+pip==24.0
+pytest==9.1.1
+ruff==0.16.10
+setuptools==84.0.0
+wheel==0.48.0

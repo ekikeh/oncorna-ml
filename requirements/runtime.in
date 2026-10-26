@@ -1,0 +1,4 @@
+# Public demonstration dependencies; not a reconstruction of historical science.
+numpy==2.4.6
+pandas==2.3.3
+scikit-learn==1.9.1

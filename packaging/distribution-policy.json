@@ -1,0 +1,16 @@
+{
+  "modules": [
+    "__init__.py", "prediction.py", "synthetic_demo.py"
+  ],
+  "sdist_files": [
+    "LICENSE", "README.md", "CITATION.cff", "pyproject.toml", "MANIFEST.in", "Dockerfile", ".dockerignore",
+    "packaging/distribution-policy.json", "packaging/synthetic-baseline.json",
+    "docs/synthetic_demo.md", "docs/packaging.md",
+    "requirements/runtime.in", "requirements/dev.in", "requirements/versions.txt",
+    "requirements/runtime-linux-py311.lock", "requirements/dev-linux-py311.lock",
+    "requirements/runtime-windows-py311.lock", "requirements/dev-windows-py311.lock",
+    "tools/__init__.py", "tools/audit_distribution.py", "tools/check_demo.py",
+    "tools/lock_dependencies.py", "tools/package_build.py",
+    "tests/test_distribution.py", "tests/test_lockfiles.py"
+  ]
+}

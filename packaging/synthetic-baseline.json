@@ -1,0 +1,96 @@
+{
+  "class_order": [
+    "SYN-CLASS-A",
+    "SYN-CLASS-B",
+    "SYN-CLASS-C",
+    "SYN-CLASS-D",
+    "SYN-CLASS-E"
+  ],
+  "confusion_matrix": {
+    "class_order": [
+      "SYN-CLASS-A",
+      "SYN-CLASS-B",
+      "SYN-CLASS-C",
+      "SYN-CLASS-D",
+      "SYN-CLASS-E"
+    ],
+    "columns": "predicted_synthetic_class",
+    "counts": [
+      [
+        8,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        8,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        8,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        8,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        8
+      ]
+    ],
+    "rows": "true_synthetic_class"
+  },
+  "environment": {
+    "numpy": "2.4.6",
+    "pandas": "2.3.3",
+    "python": "3.11.9",
+    "scikit_learn": "1.9.1"
+  },
+  "evaluation_data_sha256": "0fbc2cdbc9b721438cdfd042ee6ff03b08932b80a81e67101583df2e63253963",
+  "evaluation_samples": 40,
+  "gene_schema": [
+    "SYN-GENE-01",
+    "SYN-GENE-02",
+    "SYN-GENE-03",
+    "SYN-GENE-04",
+    "SYN-GENE-05",
+    "SYN-GENE-06",
+    "SYN-GENE-07",
+    "SYN-GENE-08",
+    "SYN-GENE-09",
+    "SYN-GENE-10",
+    "SYN-GENE-11",
+    "SYN-GENE-12"
+  ],
+  "input_semantics": "previously_normalized_log_transformed_expression_like",
+  "limitations": "Teaching fixture only; synthetic metrics are not scientific or clinical results.",
+  "metrics": {
+    "accuracy": 1.0,
+    "macro_f1": 1.0
+  },
+  "model": {
+    "source": "fresh_synthetic_training_only",
+    "steps": [
+      "StandardScaler",
+      "L2 multinomial LogisticRegression(C=1)"
+    ]
+  },
+  "scope": "synthetic_demo_only",
+  "seed": 20261026,
+  "training_data_sha256": "1bed2ad016e7bb065017c8a7d87aade3b56563277730ff2f31b29caed1cfc2a4",
+  "training_samples": 100
+}

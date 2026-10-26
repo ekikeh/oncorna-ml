@@ -37,21 +37,22 @@ TCGA-BRCA is one research cohort. Expression-derived labels share signal with ex
 
 ## Quick start: public code and tests
 
-Use Python 3.11. With Miniforge or Mamba, from the repository root:
+Use the exact Python/platform profiles in the [packaging guide](docs/packaging.md).
+For the Linux profile (Python 3.11.17), from the repository root:
 
 ```bash
-conda env create -f environment.yml
-conda activate oncorna-ml
-python -m pip install -e ".[dev]"
-python -m pytest
-ruff check .
+python3.11 -m venv .venv-demo
+.venv-demo/bin/python -m pip --isolated install --require-hashes --no-deps -r requirements/dev-linux-py311.lock
+.venv-demo/bin/python -m pip --isolated install --no-deps --no-build-isolation -e .
+.venv-demo/bin/python -B tools/check_demo.py
+.venv-demo/bin/python -m pytest
 ```
 
-These checks use repository tests; they do not run the completed 169-patient evaluation. The `pyproject.toml` dependencies are ranges, not a lock of the historical scientific environment. The tracked [CI workflow](.github/workflows/ci.yml) runs lint and tests. [Reproducibility notes](docs/reproducibility.md) distinguish the historical environment, aggregate evidence, and public implementation.
+These checks use synthetic and mocked repository tests; they do not run the completed 169-patient evaluation. The new platform locks describe the public demo environment, not the historical scientific environment. The [CI workflow](.github/workflows/ci.yml) specifies Linux/Windows tests and safe package audits; its actual run status must be checked separately. [Reproducibility notes](docs/reproducibility.md) distinguish historical evidence from public implementation.
 
 For source acquisition, see [data provenance](docs/data_provenance.md) and `scripts/download_data.py`. Downloading and processing the full cohort is separate from this quick start. The tracked [preview](data/demo/README.md) is **10 real training samples by 100 genes**, selected for table inspection. It is neither synthetic nor representative and cannot be passed to the final fitted model. Its [selection and attribution](docs/demo_dataset.md) are documented.
 
-Run `python -m oncorna.synthetic_demo` for a separate offline [synthetic teaching demonstration](docs/synthetic_demo.md), labeled `synthetic_demo_only`. It generates invented data, trains a fresh demonstration model, and prints aggregate results and a confusion matrix. Exact dependency locks and broader CI/packaging changes remain Phase 4D work. The fitted real model, complete arrays, patient-level predictions, and evaluation authorizations remain local; the [release scope](docs/release_scope.md) explains why the public checkout cannot reproduce the closed held-out assessment.
+In the installed environment, run `python -m oncorna.synthetic_demo` for the offline [synthetic teaching demonstration](docs/synthetic_demo.md), labeled `synthetic_demo_only`. It generates invented data, fits a fresh demo model, and prints aggregate results and a confusion matrix. [Exact locks, CI and distribution controls](docs/packaging.md) support this public fixture. The fitted real model and protected artifacts remain local; [release scope](docs/release_scope.md) explains why the public checkout cannot reproduce the closed assessment.
 
 ## Repository map
 

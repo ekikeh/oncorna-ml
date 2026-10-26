@@ -10,8 +10,8 @@ Do not include private fitted-model binaries, full patient-level expression or m
 
 A public user can inspect the code and reports and run safe tests. The repository does not supply the controlled inputs, fitted model, or authorization needed to reproduce the 169-patient held-out evaluation. The existing 100-gene, 10-sample preview is real training data for structure inspection; it cannot serve as a final-model input or performance demonstration.
 
-## Standalone synthetic demo and later packaging
+## Standalone synthetic demo and package controls
 
 The [standalone synthetic demo](synthetic_demo.md) generates its entire fixture in memory, fits a fresh synthetic classifier, and prints only labeled aggregate results. Its strict ordered-gene validation component accepts an explicit schema and does not load a model. No artifact-loading interface or production inference is provided; caller-supplied models and model-path options are not accepted.
 
-Exact dependency pins and broader CI/distribution changes remain Phase 4D. Any synthetic test environment is separate from the historical science environment. A synthetic demonstration does not reproduce the frozen scientific result or establish clinical use. Inspect built archives and container contents before publication; ignore rules alone are not proof of exclusion.
+The [packaging controls](packaging.md) provide platform hash locks, an exact wheel/source-archive allowlist and forbidden-content audits, plus a three-module Docker context. The existing real-training preview is excluded from all new archives and images. The repository and installable source archive have different inventories: the full scientific history remains in the repository. A synthetic environment does not reproduce the frozen result or establish clinical use. Inspect actual built contents before publication; ignore rules alone are not proof of exclusion.

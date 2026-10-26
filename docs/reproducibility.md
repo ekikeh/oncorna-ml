@@ -14,10 +14,10 @@ The independently verified, one-time final test is closed. The approved aggregat
 
 The public checkout contains code, versioned configurations, source checksum references, documentation, tests, and a 10-sample by 100-gene **source-derived training preview**. `data/demo/` is not synthetic. The [quick start](../README.md) supports package installation and tests without the full cohort. Rebuilding the real cohort and historical data products requires the original public source files and local derived artifacts; the controlled final evaluation also requires the private fitted artifact and authorization process. Public users cannot reproduce its 169-patient result from this checkout alone.
 
-Current `pyproject.toml` dependency ranges and `environment.yml` target a working development environment; they are not an exact lock of the historical scientific runtime. Existing CI runs lint and tests. Its result should not be interpreted as reproducing the frozen scientific evaluation.
+The `pyproject.toml` compatibility ranges and legacy `environment.yml` are not an exact lock of the historical scientific runtime. The new [platform locks and CI](packaging.md) target the synthetic software fixtures; their results must not be interpreted as reproducing the frozen scientific evaluation.
 
-## Standalone synthetic demonstration and planned packaging
+## Standalone synthetic demonstration and packaging
 
 The separate [synthetic demonstration](synthetic_demo.md) now generates 100 training and 40 evaluation samples over 12 invented genes with default seed 20261026. It fits its own model in memory and prints aggregate results labeled `synthetic_demo_only`, dataset digests, and dependency versions. It does not load any real fitted artifact or access patient data. Strict input validation is independently reusable; it performs no inference or preprocessing fit.
 
-Exact dependency pins and broader synthetic-only CI/distribution work remain Phase 4D. Any Docker test environment and its dependency set describe the tested software fixtures, not the historical scientific environment. Synthetic scores do not stand in for the final held-out statistics. See [release scope](release_scope.md).
+Phase 4D provides separate Linux/Windows hash locks, CI definitions, archive inventory/content audits, and a minimal synthetic-only container specification; see [packaging](packaging.md). These environments describe tested software fixtures, not the historical scientific environment. Synthetic scores do not stand in for final held-out statistics, and an unrun CI definition is not a successful CI run. See [release scope](release_scope.md).

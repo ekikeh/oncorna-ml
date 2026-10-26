@@ -1,0 +1,13 @@
+**
+!Dockerfile
+!.dockerignore
+!requirements/
+requirements/*
+!requirements/runtime-linux-py311.lock
+!src/
+src/*
+!src/oncorna/
+src/oncorna/*
+!src/oncorna/__init__.py
+!src/oncorna/prediction.py
+!src/oncorna/synthetic_demo.py
