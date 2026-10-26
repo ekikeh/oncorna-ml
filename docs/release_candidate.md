@@ -1,8 +1,9 @@
 # v0.1.0 release-candidate notes
 
 Status: proposed first research release; not tagged or published. Preparation date:
-2026-10-27. This is not a historical release date. Citation version remains 0.1.0;
-`date-released` is omitted until an actual release is authorized and made.
+2026-10-27. Citation version remains 0.1.0, with `date-released: "2026-10-27"`
+recording the intended publication date of October 27, 2026. This metadata is not
+evidence that a GitHub release already exists; publication still requires authorization.
 
 ## Contents and attribution
 
@@ -101,12 +102,12 @@ not for clinical use.**
    archive inventories and recorded hashes; resolve any redistribution concerns.
 2. If authorized, push the reviewed changes and require both platform CI jobs to pass
    on the exact intended release commit. Do not substitute the baseline CI result.
-3. Leave `date-released` absent while the release date is unknown. Once the actual
-   publication date is established and citation editing is authorized, set it to that
-   calendar date (YYYY-MM-DD), review and commit the change. Do not use a preparation
-   date as a substitute. If publication is deferred to another date, correct the date
-   and repeat the affected gates before release. Record the exact final commit SHA
-   and require both hosted CI jobs to pass on that SHA after any citation change.
+3. Confirm that the entered `date-released: "2026-10-27"` still matches the intended
+   actual publication date. If publication is deferred to another date, obtain
+   authorization for the citation correction, review and commit it, and repeat the
+   affected gates before release. Do not use a preparation date as a substitute.
+   Record the exact final commit SHA and require both hosted CI jobs to pass on
+   that SHA, including after any citation correction.
 4. From that clean final commit, build/audit the wheel and source archive with the
    locked tools, verify the clean install and deterministic demo, and compute new
    SHA-256 hashes for the exact files to attach. Preserve the actual audited bytes;
